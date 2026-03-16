@@ -1,8 +1,8 @@
 # FINQUANT-NEXUS v4 — Phase-wise Progress Tracker
 
 > **Last Updated:** 2026-03-16
-> **Current Phase:** Phase 2 (Feature Engineering) — STARTING
-> **Overall:** Phase 0 ✅ (18/18), Phase 1 ✅ (12/12 tests, 45 stocks + index downloaded)
+> **Current Phase:** Phase 2 (Feature Engineering) — ✅ DONE
+> **Overall:** Phase 0 ✅ (18/18), Phase 1 ✅ (12/12), Phase 2 ✅ (18/18) = 48/48 tests GREEN
 
 ---
 
@@ -12,7 +12,7 @@
 |-------|------|--------|------|-----------------|
 | 0 | Global Setup | ✅ DONE | D0 | Config, seed, logger, metrics |
 | 1 | Data Pipeline | ✅ DONE | D1-D2 | 45 stocks + index downloaded, quality verified |
-| 2 | Feature Engineering | NOT STARTED | D3-D4 | 27 technical indicators + normalization |
+| 2 | Feature Engineering | ✅ DONE | D3-D4 | 21 technical indicators + z-score normalization |
 | 3 | FinBERT Sentiment | NOT STARTED | D5-D6 | News sentiment scores per stock |
 | 4 | Graph Construction | NOT STARTED | D6-D7 | Correlation + sector + supply chain edges |
 | 5 | T-GAT Model | NOT STARTED | D8-D10 | Temporal Graph Attention Network |
@@ -23,7 +23,7 @@
 | 11 | Federated Learning | NOT STARTED | D31-D37 | Multi-client FL with DP |
 | 12 | Quantum ML | NOT STARTED | D38-D42 | QAOA portfolio optimization |
 | 13 | API + Docker | NOT STARTED | D43-D46 | FastAPI + containerization |
-| 14 | Dashboard + Benchmarks | NOT STARTED | D46-D49 | Next.js 14 frontend |
+| 14 | Dashboard + Benchmarks | NOT STARTED | D46-D49 | React frontend with best viz libs |
 | 15 | Thesis + Demo | NOT STARTED | D50-D56 | Final thesis document |
 
 ---
@@ -101,18 +101,48 @@
 
 ---
 
-## PHASE 2: Feature Engineering — NOT STARTED
+## PHASE 2: Feature Engineering — ✅ DONE
 
-### Kya Banega (Plan)
-- 27 technical indicators (RSI, MACD, Bollinger Bands, SMA, EMA, ATR, Stochastic, Volume ratios, Returns, Volatility)
-- Rolling z-score normalization (window=252 = 1 trading year)
-- Data leakage prevention (no future data in features)
-- Feature matrix per stock: [dates x features]
+### Kya Banaya (What)
+| File | Purpose | Lines | Status |
+|------|---------|-------|--------|
+| `src/data/features.py` | 21 technical indicators + z-score normalization + tensor builder | ~280 | ✅ |
+| `tests/test_features.py` | 18 tests (14 unit + 4 edge cases) | ~280 | ✅ 18/18 PASS |
 
-### Kyu (Reasoning Preview)
-- Raw OHLCV data se model directly seekhna mushkil hai. Technical indicators market patterns encode karte hain.
-- Z-score normalization kyu? Different stocks different price ranges (RELIANCE ~2800, YESBANK ~20). Normalize karne se model ko scale ka farak nahi padega.
-- Rolling window (252) kyu? Static normalization mein future data leak hota hai. Rolling = sirf past 1 year ka mean/std use karo. Train/val/test split respect hoti hai.
+### 21 Features Generated (per stock, per day)
+| Category | Features | Count |
+|----------|----------|-------|
+| Trend | RSI, MACD, MACD Signal, MACD Histogram | 4 |
+| Bollinger | BB Upper, BB Mid, BB Lower | 3 |
+| Moving Avg | SMA 20, SMA 50, EMA 12, EMA 26 | 4 |
+| Volatility | ATR, Volatility 20d, Volatility 60d | 3 |
+| Stochastic | Stoch %K, Stoch %D | 2 |
+| Volume | Volume SMA, Volume Ratio | 2 |
+| Returns | Return 1d, 5d, 20d | 3 |
+
+### Key Decisions
+1. **Pure pandas/numpy calculations** — `pandas_ta` aur `ta-lib` dono Python 3.11 pe install issues the. Manual implementation = zero external dependency, full control.
+2. **Per-stock rolling z-score** — Har stock ka apna mean/std (252-day window). Cross-sectional nahi kiya kyunki har stock ka scale alag hai.
+3. **NaN rows DROPPED** — Rolling windows ke warm-up period (~252 days) ka data hata diya. Downstream mein zero NaN issues.
+4. **Clip [-5, +5]** — Extreme z-scores clip kiye to prevent outlier domination in neural networks.
+5. **3D tensor output** — `build_feature_tensor()` returns `(n_stocks, n_timesteps, n_features)` shape — directly usable for T-GAT/RL.
+6. **Look-ahead bias tested** — Test verifies z-score at time t is identical whether computed on full data or truncated data.
+
+### Kyu Banaya (Why / Reasoning)
+1. **Raw OHLCV se model nahi seekhta** — Close price ek number hai, usse trend/momentum/volatility ka pata nahi chalta. Indicators yeh "derived signals" provide karte hain.
+2. **RSI (Relative Strength Index)** — Overbought (>70) / oversold (<30) detect karta hai. RL agent ko "stock overpriced" signal milta hai.
+3. **MACD** — Trend reversal indicator. MACD line signal line cross kare = buy/sell signal.
+4. **Bollinger Bands** — Volatility bands. Price upper band touch kare = potentially sell, lower = potentially buy.
+5. **Rolling z-score kyu?** — Static normalization (fit on training set) mein problem: val/test ke statistics alag hote hain. Rolling = adaptive, time-aware, no leakage.
+6. **NaN drop kyu?** — Agar NaN chhod dete toh T-GAT mein NaN propagate hota, loss NaN hota, training fail hoti. Clean input = clean training.
+
+### Tests: 18/18 PASSING ✅
+- Technical indicators (3): all 21 columns present, count check, real data verification
+- Normalization (2): z-score clipped [-5,+5], no look-ahead bias
+- Full pipeline (4): no NaN output, all features present, rows reduced, real RELIANCE data
+- Feature tensor (3): correct 3D shape, no NaN, float32 dtype
+- Edge cases (4): short history, zero volume, constant price, single stock
+- Feature columns (2): match config, get_feature_columns returns copy
 
 ---
 
@@ -141,7 +171,7 @@
 |-------|-----------|------------|-------------|--------|
 | 0 | 18/18 | - | - | ✅ PASS |
 | 1 | 12/12 | ✓ handled | - | ✅ PASS |
-| 2 | -/6 | -/4 | - | - |
+| 2 | 14/14 | 4/4 | - | ✅ PASS |
 | 3 | -/7 | -/3 | - | - |
 | 4 | -/6 | -/4 | Integration #1 | - |
 | 5 | -/8 | -/3 | - | - |
@@ -153,7 +183,7 @@
 | 12 | -/6 | -/3 | - | - |
 | 13 | -/10 | -/5 | Integration #3 | - |
 | 14 | - | - | - | - |
-| **Total** | **30/124** | **✓/54** | **0/11** | **30/189** |
+| **Total** | **44/124** | **4+/54** | **0/11** | **48/189** |
 
 ---
 
