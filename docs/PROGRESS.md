@@ -1,8 +1,8 @@
 # FINQUANT-NEXUS v4 — Phase-wise Progress Tracker
 
 > **Last Updated:** 2026-03-16
-> **Current Phase:** Phase 2 (Feature Engineering) — ✅ DONE
-> **Overall:** Phase 0 ✅ (18/18), Phase 1 ✅ (12/12), Phase 2 ✅ (18/18) = 48/48 tests GREEN
+> **Current Phase:** Phase 3 (FinBERT Sentiment) — ✅ DONE
+> **Overall:** Phase 0 ✅ (18/18), Phase 1 ✅ (12/12), Phase 2 ✅ (18/18), Phase 3 ✅ (19/19) = 67/67 tests GREEN
 
 ---
 
@@ -13,7 +13,7 @@
 | 0 | Global Setup | ✅ DONE | D0 | Config, seed, logger, metrics |
 | 1 | Data Pipeline | ✅ DONE | D1-D2 | 45 stocks + index downloaded, quality verified |
 | 2 | Feature Engineering | ✅ DONE | D3-D4 | 21 technical indicators + z-score normalization |
-| 3 | FinBERT Sentiment | NOT STARTED | D5-D6 | News sentiment scores per stock |
+| 3 | FinBERT Sentiment | ✅ DONE | D5-D6 | FinBERT + news fetcher + sentiment matrix |
 | 4 | Graph Construction | NOT STARTED | D6-D7 | Correlation + sector + supply chain edges |
 | 5 | T-GAT Model | NOT STARTED | D8-D10 | Temporal Graph Attention Network |
 | 6 | RL Environment | NOT STARTED | D10-D12 | Gym env for portfolio management |
@@ -172,7 +172,7 @@
 | 0 | 18/18 | - | - | ✅ PASS |
 | 1 | 12/12 | ✓ handled | - | ✅ PASS |
 | 2 | 14/14 | 4/4 | - | ✅ PASS |
-| 3 | -/7 | -/3 | - | - |
+| 3 | 15/15 | 4/4 | - | ✅ PASS |
 | 4 | -/6 | -/4 | Integration #1 | - |
 | 5 | -/8 | -/3 | - | - |
 | 6 | -/10 | -/6 | - | - |
@@ -183,7 +183,7 @@
 | 12 | -/6 | -/3 | - | - |
 | 13 | -/10 | -/5 | Integration #3 | - |
 | 14 | - | - | - | - |
-| **Total** | **44/124** | **4+/54** | **0/11** | **48/189** |
+| **Total** | **59/124** | **8+/54** | **0/11** | **67/189** |
 
 ---
 
