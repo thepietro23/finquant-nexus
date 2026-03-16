@@ -28,10 +28,45 @@ logger = get_logger('finbert')
 _MODEL_CACHE = {}
 
 
+def _get_model_path():
+    """Resolve FinBERT model path — local first, then HuggingFace Hub.
+
+    Local path: data/finbert_local/ (manually downloaded for SSL/proxy environments)
+    Fallback: ProsusAI/finbert from HuggingFace Hub
+    """
+    cfg = get_config('sentiment')
+    model_name = cfg.get('model', 'ProsusAI/finbert')
+
+    # Check local path first
+    project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    local_path = os.path.join(project_root, 'data', 'finbert_local')
+    if os.path.exists(os.path.join(local_path, 'config.json')):
+        logger.info(f'Using local FinBERT model from {local_path}')
+        return local_path
+
+    return model_name
+
+
+def _patch_torch_load():
+    """Patch torch.load for torch 2.5 compatibility with .bin model files.
+
+    torch 2.5 defaults to weights_only=True which fails with some model files.
+    This patch sets weights_only=False for model loading only.
+    """
+    if not hasattr(torch, '_finbert_patched'):
+        _orig = torch.load
+        def _safe_load(*args, **kwargs):
+            kwargs['weights_only'] = False
+            return _orig(*args, **kwargs)
+        torch.load = _safe_load
+        torch._finbert_patched = True
+
+
 def load_finbert(device=None):
     """Load ProsusAI/finbert model and tokenizer.
 
     Caches globally to avoid reloading. Uses FP16 on GPU.
+    Loads from local data/finbert_local/ if available (SSL/proxy friendly).
 
     Returns:
         tuple: (model, tokenizer, device)
@@ -41,16 +76,18 @@ def load_finbert(device=None):
 
     from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
-    cfg = get_config('sentiment')
-    model_name = cfg.get('model', 'ProsusAI/finbert')
+    # Patch torch.load for torch 2.5 compatibility
+    _patch_torch_load()
+
+    model_path = _get_model_path()
 
     if device is None:
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-    logger.info(f'Loading FinBERT ({model_name}) on {device}...')
+    logger.info(f'Loading FinBERT ({model_path}) on {device}...')
 
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-    model = AutoModelForSequenceClassification.from_pretrained(model_name)
+    tokenizer = AutoTokenizer.from_pretrained(model_path)
+    model = AutoModelForSequenceClassification.from_pretrained(model_path)
     model = model.to(device)
     model.eval()
 
