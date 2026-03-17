@@ -1892,3 +1892,199 @@ Phase 9: stress.py → VaR, CVaR, crash scenarios         ← NEW
                         |
                   Phase 10: NAS/DARTS
 ```
+
+---
+
+## PHASE 10: NAS / DARTS (Neural Architecture Search)
+
+### Kya Banaya?
+
+| File | Kya Hai | Kyu Banaya |
+|------|---------|------------|
+| `src/nas/search_space.py` | 5 candidate operations + MixedOp (softmax-weighted blend) + SearchSpace config | Manually T-GAT design kiya (64 dim, 2 layers, 4 heads) — par kya guarantee hai ki yeh BEST design hai? NAS automatically better architecture dhundh sakta hai. |
+| `src/nas/darts.py` | TGATSupernet with MixedOps, DARTSSearcher (bilevel optimization), RL policy grid search, PDF report generation | DARTS = "Differentiable Architecture Search" — gradient-based search. No brute force. Architecture weights (alpha) seekh te hain ki kaunsa operation best hai. |
+| `tests/test_nas.py` | 18 tests: supernet, convergence, extraction, report, reproducibility, RL search, edge cases | Supernet fit hota hai? Alpha converge hota hai? Top-3 extract hote hain? Same seed = same result? |
+
+### DARTS — Simple Analogy
+
+```
+Sooch: Tu ek restaurant kholna chahta hai.
+
+Manual design (current T-GAT):
+  "Mujhe lagta hai Italian best hoga, 2 floors, 4 tables."
+  → May not be optimal. Just your guess.
+
+DARTS approach:
+  Step 1: Build a "super-restaurant" that serves Italian, Chinese,
+          Indian, Mexican, Japanese ALL AT ONCE (supernet).
+  Step 2: Track which cuisines customers order most (alpha weights).
+  Step 3: Over time, Italian gets 60% orders, Chinese 25%, rest 15%.
+  Step 4: Final restaurant: Italian (primary) + Chinese (secondary).
+
+Stock market version:
+  Supernet has 5 operations at each layer: linear, conv1d, attention, skip, none.
+  During search, alpha weights learn which operations work best.
+  After search: extract the winning ops → retrain from scratch.
+```
+
+### Two Search Targets
+
+```
+1. T-GAT (DARTS — full bilevel optimization):
+   Supernet:  input_proj → [MixedOp₁] → [MixedOp₂] → ... → GRU → output_proj
+   Each MixedOp blends: linear + conv1d + attention + skip + none
+   Alpha weights decide: "Is layer ko attention chahiye ya linear?"
+
+   Bilevel:
+     Inner loop: optimize model weights W on TRAINING data
+     Outer loop: optimize alpha on VALIDATION data
+     → Prevents overfitting! Alpha optimized for generalization.
+
+2. RL Policy (Grid search — simple, keeps SB3):
+   5 candidates tested:
+     [64, 32]      — lightweight
+     [128, 64]     — default (hand-designed)
+     [256, 128]    — wide
+     [128, 128, 64] — deep 3-layer
+     [64, 64]      — square
+   Each trained → evaluated → ranked by Sharpe ratio.
+
+Kyu DARTS sirf T-GAT pe?
+  SB3 (Stable-Baselines3) ka PPO implementation sealed hai.
+  DARTS wrapping is hacky and breaks SB3's internal optimizations.
+  T-GAT is OUR model — full control hai. Grid search for RL = pragmatic.
+```
+
+### 5 Candidate Operations
+
+```
+1. LINEAR:     x → Linear(in, out) → LayerNorm → ELU
+   Standard feedforward. Most common. Safe baseline.
+
+2. CONV1D:     x → Conv1d(1×1) → LayerNorm → ELU
+   Feature mixing via convolution. Captures local patterns.
+
+3. ATTENTION:  x → MultiheadAttention(self) → proj → LayerNorm → ELU
+   Self-attention across ALL nodes. Expensive but powerful.
+   "Har stock sabhi stocks ko dekh ke decide kare."
+
+4. SKIP:       x → Linear(in, out) if dims differ, else identity
+   Identity connection. "Is layer mein kuch mat karo, bas pass through."
+   Important for gradient flow in deep networks.
+
+5. NONE:       → zeros
+   Zero output. Effectively REMOVES this layer from the network.
+   "Is layer ki zarurat hi nahi hai."
+```
+
+### MixedOp — DARTS Ka Core
+
+```
+Normal layer: output = Linear(x)  — fixed, one operation.
+
+MixedOp: output = 0.3 × Linear(x)
+                + 0.25 × Conv1d(x)
+                + 0.2 × Attention(x)
+                + 0.15 × Skip(x)
+                + 0.1 × None(x)
+
+Weights come from: softmax(alpha)
+alpha is LEARNABLE — gradient descent se optimize hota hai.
+
+Training ke dauraan:
+  Epoch 1:  alpha = [0.0, 0.0, 0.0, 0.0, 0.0] → softmax → [0.2, 0.2, 0.2, 0.2, 0.2]
+            All operations equally weighted (random)
+  Epoch 50: alpha = [2.5, 0.1, -0.5, 1.8, -3.0] → softmax → [0.55, 0.05, 0.03, 0.27, 0.01]
+            Linear dominates (55%), Skip strong (27%), rest pruned
+
+After search: argmax → "Linear" selected for this layer.
+```
+
+### Bilevel Optimization — Kaise Kaam Karta Hai
+
+```
+Standard training: minimize L_train(W)
+  Problem: model can memorize training data → overfit
+
+DARTS bilevel:
+  Inner: W* = argmin L_train(W, α)    — best weights for given architecture
+  Outer: α* = argmin L_val(W*, α)     — best architecture on validation
+
+Practical (alternating steps):
+  For each epoch:
+    Step 1: One gradient step on W using train loss
+            W ← W - η × ∇_W L_train(W, α)
+    Step 2: One gradient step on α using val loss
+            α ← α - λ × ∇_α L_val(W, α)
+
+Kyu better?
+  α validation pe optimize hota hai → generalizes
+  W training pe optimize hota hai → fits data
+  Together: architecture that trains well AND generalizes
+```
+
+### Top-3 Architecture Extraction
+
+```
+After search:
+  Architecture 1 (best): argmax(alpha) at each layer
+    e.g., [linear, attention] → "Layer 1: linear, Layer 2: attention"
+
+  Architecture 2 (variant 1): swap layer 0 to its 2nd-best op
+    e.g., [conv1d, attention]
+
+  Architecture 3 (variant 2): swap layer 1 to its 2nd-best op
+    e.g., [linear, skip]
+
+Kyu top-3?
+  Single best may overfit to validation data.
+  Top-3 gives robustness + options for downstream tuning.
+  Retrain from scratch (new random weights) → fair comparison.
+```
+
+### Tests: 18/18 PASSING
+
+| ID | Test | Kya Check |
+|----|------|-----------|
+| T10.1 | Supernet params | < 50MB, > 0 params |
+| T10.2 | Single forward | (10, 64) output from single graph |
+| T10.3 | Sequence forward | (10, 64) output from 5-step sequence |
+| T10.4 | Param separation | arch_params ∩ weight_params = ∅ |
+| T10.5 | Alpha converges | entropy decreases over 30 epochs |
+| T10.6 | Extract top-3 | 3 architectures, valid ops, correct layers |
+| T10.7 | Comparison | finite val_loss, convergence info available |
+| T10.8 | Report PDF | File generated, size > 0 |
+| T10.9 | Reproducibility | seed=42 twice → identical architecture |
+| T10.10 | RL candidates | 5 PolicyConfig objects with net_arch |
+| T10.11 | RL grid search | 2 candidates trained, ranked by Sharpe |
+| E10.1 | Tiny search space | 2 ops only → 3 archs still extracted |
+| E10.2 | Single layer | num_layers=1 → works, arch len=1 |
+| E10.3 | Skip dominance | forced skip alpha → low entropy detected |
+| T10.12-15 | Search space | ops create, MixedOp blends, config loads, unknown raises |
+
+### File Flow (Updated — Complete P0-P10 Pipeline)
+
+```
+Phase 0:  config.yaml + seed + logger + metrics
+Phase 1:  stocks.py → download.py → quality.py → data/*.csv
+Phase 2:  features.py → Feature Tensor (47, ~2200, 21)
+Phase 3:  news_fetcher.py → finbert.py → Sentiment Matrix (47, ~2200)
+Phase 4:  builder.py → PyG Data Objects (per day)
+Phase 5:  tgat.py → Stock Embeddings (47, 64)
+Phase 6:  environment.py → Gymnasium PortfolioEnv
+Phase 7:  agent.py → PPO/SAC trained agents
+Phase 8:  timegan.py → Synthetic augmented data
+Phase 9:  stress.py → VaR, CVaR, crash scenarios
+Phase 10: search_space.py + darts.py → NAS-optimized architecture  ← NEW
+
+           Hand-designed T-GAT          NAS T-GAT
+           [64, 2 layers, 4 heads]      [?, ? layers, ? heads]
+                    \                      /
+                     compare (Sharpe ratio)
+                              |
+                     Winner → Phase 11: Federated Learning
+```
+
+---
+
+> **Next: Phase 11 — Federated Learning. 4 sector-wise clients (Banking/IT/Pharma/Energy), FedAvg + FedProx, differential privacy.**

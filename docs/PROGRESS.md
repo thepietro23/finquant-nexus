@@ -1,8 +1,8 @@
 # FINQUANT-NEXUS v4 — Phase-wise Progress Tracker
 
-> **Last Updated:** 2026-03-16
-> **Current Phase:** Phase 8-9 (TimeGAN + Stress) — ✅ DONE
-> **Overall:** Phase 0-9 = 170/170 tests GREEN
+> **Last Updated:** 2026-03-17
+> **Current Phase:** Phase 10 (NAS/DARTS) — ✅ DONE
+> **Overall:** Phase 0-10 = 188/188 tests GREEN
 
 ---
 
@@ -19,7 +19,7 @@
 | 6 | RL Environment | ✅ DONE | D10-D12 | Gym env for portfolio management |
 | 7 | Deep RL Agent | ✅ DONE | D12-D17 | PPO + SAC training |
 | 8-9 | TimeGAN + Stress | ✅ DONE | D18-D24 | Synthetic data + stress testing |
-| 10 | NAS/DARTS | NOT STARTED | D25-D30 | Architecture search |
+| 10 | NAS/DARTS | ✅ DONE | D25-D30 | DARTS T-GAT search + RL policy grid search |
 | 11 | Federated Learning | NOT STARTED | D31-D37 | Multi-client FL with DP |
 | 12 | Quantum ML | NOT STARTED | D38-D42 | QAOA portfolio optimization |
 | 13 | API + Docker | NOT STARTED | D43-D46 | FastAPI + containerization |
@@ -416,11 +416,57 @@ Phase 8-9: TimeGAN + Stress Testing (2026-03-16)
 
 ---
 
-## PHASES 10-15: Upcoming (Brief)
+## PHASE 10: NAS / DARTS — ✅ DONE
+
+### Kya Banaya (What)
+| File | Purpose | Lines | Status |
+|------|---------|-------|--------|
+| `src/nas/search_space.py` | 5 candidate ops (linear/conv1d/attention/skip/none), MixedOp, SearchSpace config | ~170 | ✅ |
+| `src/nas/darts.py` | TGATSupernet, DARTSSearcher (bilevel optimization), RL policy grid search, PDF report | ~430 | ✅ |
+| `tests/test_nas.py` | 18 tests (14 unit + 4 edge cases) | ~300 | ✅ 18/18 PASS |
+
+### Architecture
+```
+DARTS for T-GAT:
+  TGATSupernet: input_proj → MixedOp×N (each blends 5 ops) → GRU → output_proj
+  Bilevel optimization: alpha (arch) on val, W (weights) on train
+  After search: extract top-3 architectures → retrain from scratch
+
+RL Policy Grid Search:
+  5 candidates: [64,32], [128,64], [256,128], [128,128,64], [64,64]
+  Train PPO with each → evaluate Sharpe → rank by performance
+```
+
+### Key Decisions
+1. **DARTS on T-GAT only** — Full DARTS wrapping SB3 PPO is hacky. T-GAT DARTS is the real thesis contribution. RL uses simple grid search.
+2. **5 operations** — linear (standard), conv1d (feature mixing), attention (self-attention), skip (residual), none (prune path).
+3. **Bilevel optimization** — Outer loop optimizes architecture weights (alpha) on validation, inner loop optimizes model weights on training. Standard DARTS approach.
+4. **Top-3 extraction** — Best (argmax alpha) + 2 variants (swap one layer to 2nd-best op). Retraining from scratch removes weight sharing bias.
+5. **Soft comparison** — NAS vs hand-designed test logs comparison, warns if <5% improvement. Unit tests shouldn't hard-fail on training outcomes.
+6. **PDF report** — matplotlib + PdfPages generates convergence plots + alpha heatmap + architecture descriptions.
+
+### Tests: 18/18 PASSING ✅
+- Supernet (4): param count <50MB, single forward, sequence forward, arch/weight param separation
+- Alpha convergence (1): entropy decreases during 30-epoch search
+- Architecture extraction (1): top-3 extracted with valid ops
+- NAS comparison (1): valid convergence info with finite loss
+- Report (1): PDF generated with 3 pages
+- Reproducibility (1): same seed = same architecture
+- RL policy search (2): 5 candidates exist, grid search returns ranked results
+- Edge cases (3): tiny search space, single layer, skip dominance
+- Search space (4): all ops instantiate, MixedOp blends, config loads, unknown op raises
+
+### Git Commit
+```
+Phase 10: NAS/DARTS — architecture search for T-GAT + RL policy (18/18 tests)
+```
+
+---
+
+## PHASES 11-15: Upcoming (Brief)
 
 | Phase | Key Challenge | Reasoning |
 |-------|--------------|-----------|
-| 10: NAS | DARTS architecture search | Manually GNN design karna suboptimal. NAS automatically best architecture dhundhta hai. |
 | 11: FL | Federated Learning with differential privacy | Sector-wise clients, privacy-preserving. Novel contribution for thesis. |
 | 12: Quantum | QAOA portfolio optimization | Quantum computing angle for thesis novelty. Compare with classical. |
 | 13: API | FastAPI + Docker | Production deployment. REST API for predictions. |
@@ -442,12 +488,12 @@ Phase 8-9: TimeGAN + Stress Testing (2026-03-16)
 | 6 | 17/17 | 6/6 | - | ✅ PASS |
 | 7 | 12/12 | 4/4 | - | ✅ PASS |
 | 8-9 | 18/18 | 7/7 | Integration #2 | ✅ PASS |
-| 10 | -/7 | -/3 | - | - |
+| 10 | 14/14 | 4/4 | - | ✅ PASS |
 | 11 | -/8 | -/4 | - | - |
 | 12 | -/6 | -/3 | - | - |
 | 13 | -/10 | -/5 | Integration #3 | - |
 | 14 | - | - | - | - |
-| **Total** | **137/124** | **33/54** | **0/11** | **170/189** |
+| **Total** | **151/124** | **37/54** | **0/11** | **188/189** |
 
 ---
 

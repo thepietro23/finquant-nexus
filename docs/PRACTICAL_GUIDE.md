@@ -1020,6 +1020,171 @@ for scenario, data in summary.items():
 
 ---
 
+## Phase 10: NAS / DARTS — Manual Testing
+
+### 1. Search Space Operations
+```python
+python -c "
+import torch
+from src.nas.search_space import create_operation, OPERATION_REGISTRY, MixedOp
+
+x = torch.randn(10, 32)
+print('=== 5 Candidate Operations ===')
+for name in OPERATION_REGISTRY:
+    op = create_operation(name, 32, 64)
+    out = op(x)
+    params = sum(p.numel() for p in op.parameters())
+    print(f'  {name:12s}: input={x.shape} → output={out.shape}, params={params:,}')
+
+print()
+mixed = MixedOp(32, 64)
+out = mixed(x)
+print(f'MixedOp: input={x.shape} → output={out.shape}')
+print(f'Alpha weights: {mixed.get_weights()}')
+print(f'Selected op: {mixed.get_selected_op()}')
+"
+```
+**Expected:** All 5 ops produce (10, 64), MixedOp blends them with ~equal weights initially.
+
+### 2. TGATSupernet
+```python
+python -c "
+import torch
+from torch_geometric.data import Data
+from src.nas.darts import TGATSupernet
+
+supernet = TGATSupernet(n_features=21, hidden_dim=32, num_layers=3)
+print(f'Supernet params: {supernet.count_parameters():,}')
+print(f'Size: {supernet.get_size_mb():.2f} MB')
+print(f'Entropy: {supernet.get_alpha_entropy():.3f} (high = uniform alpha)')
+print()
+
+# Single graph
+x = torch.randn(10, 21)
+ei = torch.tensor([[0,1,2,3],[1,0,3,2]], dtype=torch.long)
+et = torch.tensor([0,0,1,1], dtype=torch.long)
+data = Data(x=x, edge_index=ei, edge_type=et)
+
+supernet.eval()
+with torch.no_grad():
+    emb = supernet.forward_single(data)
+print(f'Single graph: {emb.shape}')
+
+# Sequence
+graphs = [Data(x=torch.randn(10,21), edge_index=ei, edge_type=et) for _ in range(5)]
+with torch.no_grad():
+    emb = supernet(graphs)
+print(f'Sequence (5 steps): {emb.shape}')
+print(f'Architecture: {supernet.get_architecture()}')
+"
+```
+
+### 3. Run DARTS Search (Quick Demo)
+```python
+python -c "
+import torch
+from torch_geometric.data import Data
+from src.nas.darts import DARTSSearcher
+from src.utils.seed import set_seed
+
+set_seed(42)
+n_stocks, n_features = 10, 21
+
+# Fake graphs
+def make_graphs(seq_len=3):
+    graphs = []
+    for _ in range(seq_len):
+        x = torch.randn(n_stocks, n_features)
+        ei = torch.tensor([[0,1,2,3],[1,0,3,2]], dtype=torch.long)
+        et = torch.tensor([0,0,1,1], dtype=torch.long)
+        graphs.append(Data(x=x, edge_index=ei, edge_type=et))
+    return graphs
+
+searcher = DARTSSearcher(n_features=n_features, hidden_dim=32,
+                          output_dim=32, num_layers=2, device='cpu')
+train_g = make_graphs()
+val_g = make_graphs()
+target = torch.randn(n_stocks, 32)
+
+print('Running DARTS search (20 epochs)...')
+result = searcher.search(train_g, val_g, target, target, epochs=20)
+
+print(f'Best val loss: {result.best_val_loss:.4f}')
+print(f'Final entropy: {searcher.supernet.get_alpha_entropy():.3f}')
+print()
+
+archs = searcher.extract_top_k(k=3)
+print('=== Top-3 Architectures ===')
+for a in archs:
+    print(f'  {a.name}: {a.ops} — {a.description}')
+"
+```
+
+### 4. RL Policy Grid Search
+```python
+python -c "
+import numpy as np
+from src.rl.environment import PortfolioEnv
+from src.nas.darts import rl_policy_grid_search, PolicyConfig
+
+np.random.seed(42)
+n = 5
+features = np.random.randn(n, 200, 21).astype(np.float32)
+prices = 100 * np.cumprod(1 + np.random.randn(n, 200) * 0.01, axis=1).astype(np.float32)
+
+def env_fn():
+    return PortfolioEnv(features, prices, episode_length=30)
+
+candidates = [
+    PolicyConfig(net_arch=[32, 16], name='tiny'),
+    PolicyConfig(net_arch=[64, 32], name='small'),
+    PolicyConfig(net_arch=[128, 64], name='medium'),
+]
+
+print('Grid search over RL policy architectures...')
+results = rl_policy_grid_search(env_fn, candidates, train_steps=512, eval_episodes=2)
+print()
+print('=== Results (ranked by Sharpe) ===')
+for r in results:
+    print(f'  {r.name:10s} {str(r.net_arch):15s} → Sharpe={r.val_sharpe:.3f}')
+"
+```
+
+### 5. Generate NAS Report PDF
+```python
+python -c "
+import torch
+from torch_geometric.data import Data
+from src.nas.darts import DARTSSearcher, generate_nas_report
+from src.utils.seed import set_seed
+
+set_seed(42)
+searcher = DARTSSearcher(n_features=21, hidden_dim=32, output_dim=32,
+                          num_layers=2, device='cpu')
+
+def make_graphs():
+    graphs = []
+    for _ in range(3):
+        x = torch.randn(10, 21)
+        ei = torch.tensor([[0,1,2,3],[1,0,3,2]], dtype=torch.long)
+        et = torch.tensor([0,0,1,1], dtype=torch.long)
+        graphs.append(Data(x=x, edge_index=ei, edge_type=et))
+    return graphs
+
+target = torch.randn(10, 32)
+result = searcher.search(make_graphs(), make_graphs(), target, target, epochs=20)
+searcher.extract_top_k(k=3)
+
+path = generate_nas_report(result, output_path='models/nas_report.pdf')
+print(f'Report saved: {path}')
+import os
+print(f'Size: {os.path.getsize(path):,} bytes')
+print('Open models/nas_report.pdf to see convergence plots + architecture heatmap!')
+"
+```
+
+---
+
 ## Running Tests (Automated — Har Phase Ke Baad)
 
 ### Run All Tests
@@ -1040,6 +1205,7 @@ python -m pytest tests/test_tgat.py -v     # Phase 5 only
 python -m pytest tests/test_env.py -v      # Phase 6 only
 python -m pytest tests/test_agent.py -v    # Phase 7 only
 python -m pytest tests/test_gan.py -v      # Phase 8-9 only
+python -m pytest tests/test_nas.py -v     # Phase 10 only
 ```
 
 ### Run Single Test
@@ -1112,7 +1278,9 @@ fqn1/
 │   ├── gan/
 │   │   ├── timegan.py       # TimeGAN: 5 components, 3-phase training
 │   │   └── stress.py        # VaR, CVaR, Monte Carlo, crash scenarios
-│   ├── nas/                 # Phase 10: DARTS
+│   ├── nas/
+│   │   ├── search_space.py  # 5 ops, MixedOp, SearchSpace config
+│   │   └── darts.py         # TGATSupernet, DARTSSearcher, RL grid search
 │   ├── federated/           # Phase 11: FL
 │   ├── quantum/             # Phase 12: Quantum ML
 │   └── api/                 # Phase 13: FastAPI
@@ -1125,7 +1293,8 @@ fqn1/
 │   ├── test_tgat.py         # 19 tests
 │   ├── test_env.py          # 23 tests
 │   ├── test_agent.py        # 16 tests
-│   └── test_gan.py          # 25 tests (TimeGAN + Stress)
+│   ├── test_gan.py          # 25 tests (TimeGAN + Stress)
+│   └── test_nas.py          # 18 tests (DARTS + RL grid search)
 ├── data/                    # Raw CSVs (gitignored)
 │   └── features/            # Feature CSVs + pickle (gitignored)
 ├── models/                  # Saved models (gitignored)
