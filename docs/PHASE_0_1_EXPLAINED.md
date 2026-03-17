@@ -1541,4 +1541,354 @@ Phase 7: agent.py → PPO/SAC trained agents        ← NEW
 
 ---
 
-> **Next: Phase 8-9 — TimeGAN + Stress Testing. Synthetic data generation for augmentation. Stress test: "What if 2008 crash happens again?"**
+> **Next: Phase 10 — NAS/DARTS. Architecture search for optimal GNN structure.**
+
+---
+
+## PHASE 8: TimeGAN (Synthetic Financial Time Series)
+
+### Kya Banaya?
+
+| File | Kya Hai | Kyu Banaya |
+|------|---------|------------|
+| `src/gan/timegan.py` | TimeGAN: 5 GRU-based neural networks, 3-phase training, synthetic time series generation | Real market data limited hai — 10 years = ~2500 trading days. RL agent ko zyada diverse scenarios chahiye. TimeGAN realistic synthetic data generate karta hai jo real data jaisa dikhta hai. |
+| `src/gan/stress.py` | VaR, CVaR, Monte Carlo simulation, 4 crash scenarios, survival rate | "Model achha hai par 2008 jaisi crash aaye toh kya hoga?" Stress testing portfolio ko extreme conditions mein test karta hai. Banks mein mandatory hai. |
+| `tests/test_gan.py` | 25 tests: TimeGAN + Stress Testing + edge cases | GAN train hota hai? Generated data finite hai? VaR correct hai? Crash scenarios expected order mein hain? |
+
+### TimeGAN — Simple Analogy
+
+```
+Sooch: Tu ek painter hai jo Monet ki paintings copy karna seekh raha hai.
+
+Regular GAN:
+  - Generator: Random noise se painting banao
+  - Discriminator: "Yeh asli Monet hai ya fake?"
+  - Problem: Static images ke liye kaam karta hai, par
+    TIME SERIES mein order matters! Day 5 ka price Day 4 ke baad aana chahiye.
+
+TimeGAN adds:
+  - Embedder: Asli data ko "summary space" mein compress karo
+  - Recovery: Summary se wapas data banao (autoencoder)
+  - Supervisor: Summary mein TEMPORAL PATTERN seekho
+    ("Kal price 100 tha, aaj 102, toh kal ~103-104 hona chahiye")
+  - Generator: Random noise se summary banao (not direct data!)
+  - Discriminator: "Yeh summary real data ka hai ya generated?"
+
+Result: Generated time series mein:
+  ✓ Realistic statistics (mean, std similar)
+  ✓ Temporal patterns (trends continue, not random jumps)
+  ✓ Cross-feature correlations (OHLCV relationships preserved)
+```
+
+### 5 Components — Detail
+
+```
+1. EMBEDDER (Real → Latent):
+   Input:  Real data (batch, seq_len, n_features) e.g. (32, 128, 5)
+   GRU:    Learns temporal compression
+   FC:     Projects to latent dim
+   Output: Latent representation (32, 128, latent_dim) with sigmoid [0,1]
+
+   Kyu sigmoid? Bounded output [0,1] — GAN training mein unbounded values
+   explode kar sakte hain. Sigmoid stabilizes.
+
+2. RECOVERY (Latent → Real):
+   Input:  Latent representation
+   GRU:    Learns to decompress
+   FC:     Projects back to original dim
+   Output: Reconstructed data (same shape as input)
+
+   Embedder + Recovery = Autoencoder
+   Goal: h = Embedder(x), x_hat = Recovery(h), x_hat ≈ x
+
+3. GENERATOR (Noise → Fake Latent):
+   Input:  Random noise z ~ N(0,1) (32, 128, latent_dim)
+   GRU:    Transforms noise into structured sequence
+   FC:     Projects to latent dim + sigmoid
+   Output: Fake latent representation (32, 128, latent_dim)
+
+   Generator latent space mein kaam karta hai, data space mein NAHI.
+   Kyu? Latent space simpler hai — easier to fool discriminator.
+
+4. DISCRIMINATOR (Real vs Fake):
+   Input:  Latent representation (real or fake)
+   GRU:    Processes sequence
+   FC:     Outputs single logit per timestep
+   Output: Real/Fake score (32, 128, 1)
+
+   Standard GAN discriminator — logit output, BCE loss.
+
+5. SUPERVISOR (Temporal Dynamics):
+   Input:  Latent representation at time t
+   GRU:    Learns "what comes next" in latent space
+   FC:     Predicts h(t+1) from h(t)
+   Output: Next-step latent prediction
+
+   KEY INNOVATION: Supervisor sikhata hai temporal patterns:
+   "Agar latent state [0.3, 0.7, 0.1] hai toh next step [0.35, 0.65, 0.12] hona chahiye"
+   Generator ko bhi yeh supervisor guide karta hai.
+```
+
+### 3-Phase Training
+
+```
+Phase 1: AUTOENCODER (40% epochs)
+  Train: Embedder + Recovery
+  Loss:  MSE(Recovery(Embedder(x)), x) → minimize reconstruction error
+  Goal:  Learn good latent representation of real data
+
+  Analogy: "Pehle real paintings ko ek code mein convert karna seekho,
+  phir code se wapas painting banana seekho."
+
+Phase 2: SUPERVISOR (20% epochs)
+  Train: Supervisor (Embedder frozen)
+  Loss:  MSE(Supervisor(h[t]), h[t+1]) → predict next step in latent space
+  Goal:  Learn temporal dynamics in latent space
+
+  Analogy: "Ab code sequences ka pattern samjho —
+  agar code [A,B,C] hai toh agla D hona chahiye."
+
+Phase 3: JOINT ADVERSARIAL (40% epochs)
+  Train: Generator + Supervisor vs Discriminator
+  3 losses combined:
+
+  g_loss = g_adversarial       — fool the discriminator
+         + 10 × g_supervisor    — temporal dynamics match
+         + 100 × g_moment       — statistics match (mean + std)
+
+  g_adversarial: "Discriminator ko fool karo — fake ko real bolo"
+  g_supervisor:  "Generated sequence mein temporal pattern hona chahiye"
+  g_moment:      "Real aur fake ka mean/std same hona chahiye"
+
+  Weights: moment (100) >> supervisor (10) >> adversarial (1)
+  Kyu? Statistics match karna easier aur zyada important hai.
+  Adversarial fine-tuning last mein hota hai.
+```
+
+### Generation Pipeline
+
+```
+After training:
+  1. Sample noise:    z ~ N(0,1) shape (n_samples, seq_length, latent_dim)
+  2. Generator:       h_fake = Generator(z) → fake latent sequence
+  3. Supervisor:      h_sup = Supervisor(h_fake) → temporal refinement
+  4. Recovery:        x_fake = Recovery(h_sup) → synthetic data!
+
+Output: (n_samples, seq_length, n_features)
+Example: (100, 128, 5) = 100 synthetic sequences, 128 days each, 5 features
+```
+
+---
+
+## PHASE 9: Stress Testing (Portfolio Risk Assessment)
+
+### Kya Hai Stress Testing?
+
+```
+Sooch: Tu ek bridge engineer hai.
+  Normal testing: "Is bridge pe 10 cars chal sakti hain? Yes!"
+  Stress testing: "Agar 1000 cars ek saath aayen? Earthquake aaye? Flood aaye?"
+
+Portfolio version:
+  Normal testing: "2020-2024 mein 15% return diya? Great!"
+  Stress testing: "2008 crisis dobara aaye toh? COVID jaise crash ho toh?
+                   Flash crash ho toh? Kitna loss hoga? Portfolio survive karega?"
+```
+
+### Value at Risk (VaR) — "Worst Case at X% Confidence"
+
+```
+VaR at 95%:
+  "95% chance hai ki 1 year mein loss X se ZYADA nahi hogi."
+
+Technically: 5th percentile of return distribution.
+
+Example:
+  10,000 simulated returns sorted: [-25%, -18%, -12%, ..., +30%]
+  5th percentile = -12%
+  VaR(95%) = -12%
+  Matlab: "95% chance hai ki loss 12% se zyada nahi hogi.
+           Par 5% chance hai ki 12% se BHI zyada lose karo."
+
+compute_var(returns, 0.95):
+  return np.percentile(returns, 5)  # 5th percentile = (1-0.95)*100
+
+VaR(99%) > VaR(95%) always (more conservative):
+  99% mein 1st percentile dekhte hain → extreme tail
+  "99% confidence se loss 18% se zyada nahi hogi" (example)
+```
+
+### Conditional VaR (CVaR / Expected Shortfall) — "Average Worst Case"
+
+```
+VaR says:  "95% chance se loss ≤ 12%"
+CVaR asks: "OK, par jo 5% WORST cases hain, unka AVERAGE loss kitna hai?"
+
+Example:
+  Worst 5% of returns: [-25%, -22%, -18%, -15%, -13%]
+  CVaR = average = -18.6%
+
+CVaR ≤ VaR ALWAYS (because CVaR = average of tail, VaR = boundary)
+
+Kyu CVaR better than VaR?
+  VaR: "Loss 12% se zyada nahi" → but agar zyada hua toh KITNA zyada? Pata nahi.
+  CVaR: "Worst case mein average 18.6% loss" → tail risk capture karta hai.
+  Basel III / SEBI: CVaR preferred risk metric.
+```
+
+### Monte Carlo Simulation — "Random Future Paths"
+
+```
+Process:
+  1. Historical statistics calculate karo:
+     - Mean daily returns per stock
+     - Covariance matrix (stock correlations)
+
+  2. Cholesky decomposition: cov = L @ L.T
+     Kyu? To generate CORRELATED random numbers.
+     If RELIANCE and HDFCBANK are 0.6 correlated,
+     random simulated returns bhi 0.6 correlated hone chahiye.
+
+  3. For each simulation path (10,000 paths):
+     a. Generate random: z = random normal (252 days × n_stocks)
+     b. Correlated returns: daily_returns = mean + z @ L.T
+     c. Portfolio return: weighted sum of stock returns
+     d. Compound: total_return = prod(1 + daily_returns) - 1
+
+  4. From 10,000 total returns:
+     - VaR(95%), VaR(99%), CVaR(95%)
+     - Mean return, max loss
+     - Distribution of outcomes
+
+Kyu Monte Carlo?
+  VaR from HISTORICAL data → limited to what actually happened.
+  Monte Carlo → explores what COULD happen (infinite scenarios).
+  "2008 mein market 40% gira. Par 50% bhi gir sakta tha."
+```
+
+### Crash Scenarios — Historical Extremes
+
+```
+4 Pre-defined scenarios:
+
+1. NORMAL (baseline):
+   Daily shock: mean=0%, std=1%
+   Duration: 252 days (1 year)
+   Correlation boost: 0%
+   "Normal market conditions"
+
+2. 2008 GLOBAL FINANCIAL CRISIS:
+   Daily shock: mean=-0.3%, std=3.5%
+   Duration: 120 days (Sep 2008 - Jan 2009)
+   Correlation boost: +30%
+   "Lehman crash. Sab stocks gire. Correlations spike."
+
+3. COVID MARCH 2020:
+   Daily shock: mean=-0.5%, std=5.0%
+   Duration: 30 days (fastest crash)
+   Correlation boost: +40%
+   "COVID panic. 30% crash in 30 days. Everything correlated."
+
+4. FLASH CRASH:
+   Daily shock: mean=-2.0%, std=8.0%
+   Duration: 5 days
+   Correlation boost: +50%
+   "Algorithmic cascade. Extreme for a few days."
+
+Correlation boost kya hai?
+  Normal times: IT sector aur Pharma uncorrelated (0.2)
+  Crisis: EVERYTHING falls together. Correlation → 0.7+
+  "Diversification fails when you need it most."
+  Boosting correlations simulates this real phenomenon.
+
+Implementation:
+  1. Take base covariance matrix
+  2. Extract correlation matrix
+  3. Add correlation_boost to off-diagonals
+  4. Clip to [-1, 1]
+  5. Reconstruct stressed covariance with higher variances
+  6. Simulate portfolio under stressed parameters
+```
+
+### Survival Rate — "Portfolio Bachega Ya Nahi?"
+
+```
+For each simulation:
+  Track cumulative returns → peak → drawdown
+  If max drawdown > -15% (our threshold): SURVIVED
+  Else: FAILED (circuit breaker would have triggered)
+
+Survival rate = survived / total_simulations
+
+Example:
+  Normal market: survival 95% → "Safe, mostly fine"
+  2008 crash:    survival 40% → "Risky! 60% chance of circuit breaker"
+  Flash crash:   survival 20% → "Very dangerous. Hedge immediately."
+
+Portfolio manager ke liye critical metric:
+  "If 2008 repeats, 60% chance ki portfolio will hit -15% drawdown."
+```
+
+### Tests: 25/25 PASSING
+
+| ID | Test | Kya Check |
+|----|------|-----------|
+| T8.1 | GAN creates | TimeGAN() with correct architecture |
+| T8.2 | Components | embedder, recovery, generator, discriminator, supervisor exist |
+| T8.3 | Stats | total_params > 0, trained=False initially |
+| T8.4 | Train 2D | 2D data (n_timesteps, n_features) → sliding windows → trains |
+| T8.5 | Train 3D | 3D pre-windowed input works |
+| T8.6 | Output shape | Generated shape = (n_samples, seq_length, input_dim) |
+| T8.7 | Output finite | No NaN/Inf in generated data |
+| T8.8 | Statistics | Generated std within 20× of real std |
+| T8.9 | Sliding window | _prepare_data creates correct windows |
+| T9.1 | VaR 95 | VaR of N(0, 0.01) ≈ -0.0165 |
+| T9.2 | CVaR ≤ VaR | CVaR always more conservative |
+| T9.3 | VaR 99 > 95 | 99% VaR is worse (more negative) |
+| T9.4 | MC result | monte_carlo returns StressResult |
+| T9.5 | MC VaR | VaR values present and 99 < 95 |
+| T9.6 | All scenarios | 4 scenarios all execute |
+| T9.7 | 2008 < normal | Crash mean return worse than normal |
+| T9.8 | Survival range | 0 ≤ survival_rate ≤ 1 |
+| T9.9 | Summary format | All keys present, % formatted |
+| E8.1 | Single feature | TimeGAN with 1 feature works |
+| E8.2 | Short training | 1 epoch, no crash |
+| E8.3 | No training | generate() before train() → RuntimeError |
+| E9.1 | Equal weights | 10-stock equal weight portfolio |
+| E9.2 | Concentrated | All money in 1 stock → higher VaR |
+| E9.3 | Unknown scenario | 'crash_alien_invasion' → ValueError |
+| E9.4 | Zero variance | Flat returns → VaR = 0 |
+
+### File Flow (Updated — Complete P0-P9 Pipeline)
+
+```
+Phase 0: config.yaml + seed + logger + metrics
+Phase 1: stocks.py → download.py → quality.py → data/*.csv
+Phase 2: features.py → Feature Tensor (47, ~2200, 21)
+Phase 3: news_fetcher.py → finbert.py → Sentiment Matrix (47, ~2200)
+Phase 4: builder.py → PyG Data Objects (per day)
+Phase 5: tgat.py → Stock Embeddings (47, 64)
+Phase 6: environment.py → Gymnasium PortfolioEnv
+Phase 7: agent.py → PPO/SAC trained agents
+Phase 8: timegan.py → Synthetic augmented data          ← NEW
+Phase 9: stress.py → VaR, CVaR, crash scenarios         ← NEW
+
+                 Real Data (2500 days)
+                        |
+                    TimeGAN
+                        |
+              Synthetic Data (+10K days)
+                        |
+            RL Agent trains on BOTH
+                        |
+                 Trained Agent
+                        |
+                 Stress Testing
+              /     |       |      \
+          Normal  2008   COVID   Flash
+              \     |       |      /
+               Risk Assessment
+          (VaR, CVaR, Survival Rate)
+                        |
+                  Phase 10: NAS/DARTS
+```

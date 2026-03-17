@@ -919,6 +919,107 @@ print(f'Weights sum: {action.sum():.4f}')
 
 ---
 
+## Phase 8: TimeGAN — Manual Testing
+
+### 1. Create and Inspect
+```python
+python -c "
+from src.gan.timegan import TimeGAN
+gan = TimeGAN(input_dim=5, hidden_dim=24, latent_dim=12, n_layers=1)
+print(f'Components: embedder, recovery, generator, discriminator, supervisor')
+print(f'Total params: {sum(p.numel() for p in gan.parameters()):,}')
+print(f'Trained: {gan.trained}')
+"
+```
+
+### 2. Train on Synthetic Data
+```python
+python -c "
+import numpy as np
+from src.gan.timegan import TimeGAN
+np.random.seed(42)
+data = np.cumsum(np.random.randn(500, 5) * 0.01, axis=0).astype(np.float32) + 100
+gan = TimeGAN(input_dim=5, hidden_dim=24, latent_dim=12, n_layers=1)
+print('Training (10 epochs)...')
+gan.train(data, epochs=10, batch_size=32, seq_length=24)
+print(f'Trained: {gan.trained}')
+"
+```
+
+### 3. Generate Synthetic Data
+```python
+python -c "
+import numpy as np
+from src.gan.timegan import TimeGAN
+np.random.seed(42)
+data = np.cumsum(np.random.randn(500, 5) * 0.01, axis=0).astype(np.float32) + 100
+gan = TimeGAN(input_dim=5, hidden_dim=24, latent_dim=12, n_layers=1)
+gan.train(data, epochs=10, batch_size=32, seq_length=24)
+synthetic = gan.generate(n_samples=50, seq_length=24)
+print(f'Shape: {synthetic.shape}  (50 sequences x 24 days x 5 features)')
+print(f'Finite: {np.isfinite(synthetic).all()}')
+print(f'Real std: {data[:24].std():.2f}, Synth std: {synthetic.std():.2f}')
+"
+```
+
+---
+
+## Phase 9: Stress Testing — Manual Testing
+
+### 1. VaR and CVaR
+```python
+python -c "
+import numpy as np
+from src.gan.stress import compute_var, compute_cvar
+np.random.seed(42)
+returns = np.random.normal(0.0005, 0.01, 10000)
+print(f'VaR(95%):  {compute_var(returns, 0.95):.4f}')
+print(f'VaR(99%):  {compute_var(returns, 0.99):.4f}')
+print(f'CVaR(95%): {compute_cvar(returns, 0.95):.4f}')
+"
+```
+
+### 2. Monte Carlo Simulation
+```python
+python -c "
+import numpy as np
+from src.gan.stress import monte_carlo_simulation
+np.random.seed(42)
+n = 10
+weights = np.ones(n) / n
+mean_ret = np.random.normal(0.0005, 0.001, n)
+cov = np.eye(n) * 0.0001
+result = monte_carlo_simulation(weights, mean_ret, cov, n_simulations=5000, n_days=252)
+print(f'Mean return: {result.mean_return:.2%}')
+print(f'VaR(95%): {result.var_95:.2%}')
+print(f'CVaR(95%): {result.cvar_95:.2%}')
+print(f'Survival rate: {result.survival_rate:.1%}')
+"
+```
+
+### 3. All Crash Scenarios
+```python
+python -c "
+import numpy as np
+from src.gan.stress import run_all_stress_tests, stress_test_summary
+np.random.seed(42)
+n = 10
+weights = np.ones(n) / n
+mean_ret = np.random.normal(0.0005, 0.001, n)
+cov = np.eye(n) * 0.0001
+results = run_all_stress_tests(weights, mean_ret, cov, n_simulations=2000)
+summary = stress_test_summary(results)
+for scenario, data in summary.items():
+    print(f'--- {scenario.upper()} ---')
+    for k, v in data.items():
+        print(f'  {k}: {v}')
+    print()
+"
+```
+**Expected:** Normal best → 2008 → COVID → Flash Crash progressively worse.
+
+---
+
 ## Running Tests (Automated — Har Phase Ke Baad)
 
 ### Run All Tests
@@ -938,6 +1039,7 @@ python -m pytest tests/test_graph.py -v     # Phase 4 only
 python -m pytest tests/test_tgat.py -v     # Phase 5 only
 python -m pytest tests/test_env.py -v      # Phase 6 only
 python -m pytest tests/test_agent.py -v    # Phase 7 only
+python -m pytest tests/test_gan.py -v      # Phase 8-9 only
 ```
 
 ### Run Single Test
@@ -1007,8 +1109,9 @@ fqn1/
 │   ├── rl/
 │   │   ├── environment.py   # Gymnasium portfolio env
 │   │   └── agent.py         # PPO + SAC agents (SB3)
-│   ├── rl/                  # Phase 6-7: RL environment + agents
-│   ├── gan/                 # Phase 8-9: TimeGAN
+│   ├── gan/
+│   │   ├── timegan.py       # TimeGAN: 5 components, 3-phase training
+│   │   └── stress.py        # VaR, CVaR, Monte Carlo, crash scenarios
 │   ├── nas/                 # Phase 10: DARTS
 │   ├── federated/           # Phase 11: FL
 │   ├── quantum/             # Phase 12: Quantum ML
@@ -1021,7 +1124,8 @@ fqn1/
 │   ├── test_graph.py        # 20 tests
 │   ├── test_tgat.py         # 19 tests
 │   ├── test_env.py          # 23 tests
-│   └── test_agent.py        # 16 tests
+│   ├── test_agent.py        # 16 tests
+│   └── test_gan.py          # 25 tests (TimeGAN + Stress)
 ├── data/                    # Raw CSVs (gitignored)
 │   └── features/            # Feature CSVs + pickle (gitignored)
 ├── models/                  # Saved models (gitignored)

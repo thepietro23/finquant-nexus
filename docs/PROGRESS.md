@@ -1,8 +1,8 @@
 # FINQUANT-NEXUS v4 — Phase-wise Progress Tracker
 
 > **Last Updated:** 2026-03-16
-> **Current Phase:** Phase 7 (Deep RL Agent) — ✅ DONE
-> **Overall:** Phase 0 ✅ (18/18), Phase 1 ✅ (12/12), Phase 2 ✅ (18/18), Phase 3 ✅ (19/19), Phase 4 ✅ (20/20), Phase 5 ✅ (19/19), Phase 6 ✅ (23/23), Phase 7 ✅ (16/16) = 145/145 tests GREEN
+> **Current Phase:** Phase 8-9 (TimeGAN + Stress) — ✅ DONE
+> **Overall:** Phase 0-9 = 170/170 tests GREEN
 
 ---
 
@@ -18,7 +18,7 @@
 | 5 | T-GAT Model | ✅ DONE | D8-D10 | Temporal Graph Attention Network |
 | 6 | RL Environment | ✅ DONE | D10-D12 | Gym env for portfolio management |
 | 7 | Deep RL Agent | ✅ DONE | D12-D17 | PPO + SAC training |
-| 8-9 | TimeGAN + Stress | NOT STARTED | D18-D24 | Synthetic data + stress testing |
+| 8-9 | TimeGAN + Stress | ✅ DONE | D18-D24 | Synthetic data + stress testing |
 | 10 | NAS/DARTS | NOT STARTED | D25-D30 | Architecture search |
 | 11 | Federated Learning | NOT STARTED | D31-D37 | Multi-client FL with DP |
 | 12 | Quantum ML | NOT STARTED | D38-D42 | QAOA portfolio optimization |
@@ -341,21 +341,90 @@ Output: (n_stocks, 64) stock embeddings
 
 ---
 
-## PHASES 8-15: Upcoming (Brief)
+## PHASE 8-9: TimeGAN + Stress Testing — ✅ DONE
+
+### Kya Banaya (What)
+| File | Purpose | Lines | Status |
+|------|---------|-------|--------|
+| `src/gan/timegan.py` | TimeGAN: 5 GRU-based components, 3-phase training | ~360 | ✅ |
+| `src/gan/stress.py` | VaR, CVaR, Monte Carlo, 4 crash scenarios | ~320 | ✅ |
+| `tests/test_gan.py` | 25 tests (18 unit + 7 edge cases) | ~340 | ✅ 25/25 PASS |
+
+### TimeGAN Architecture
+```
+TimeGAN = Autoencoder + Adversarial + Temporal Dynamics
+
+5 Components (All GRU-based):
+  1. Embedder:      Real data → Latent space (sigmoid output)
+  2. Recovery:      Latent space → Data space (reconstruction)
+  3. Generator:     Random noise → Fake latent sequences (sigmoid output)
+  4. Discriminator: Real vs Fake classifier (logits)
+  5. Supervisor:    Latent → Next-step latent (temporal dynamics)
+
+3 Training Phases:
+  Phase 1 (40%): Autoencoder (Embedder + Recovery) — learn latent representation
+  Phase 2 (20%): Supervisor — learn temporal dynamics in latent space
+  Phase 3 (40%): Joint adversarial — Generator + Discriminator + moment matching
+```
+
+### Stress Testing Framework
+| Component | Kya Karta Hai |
+|-----------|---------------|
+| `compute_var()` | Value at Risk — "95% confidence se worst loss kitni hogi?" |
+| `compute_cvar()` | Conditional VaR — "Worst 5% cases mein average loss" |
+| `monte_carlo_simulation()` | Cholesky decomposition + random paths → portfolio returns distribution |
+| `simulate_crash_scenario()` | Stressed covariance + shocked returns → survival rate tracking |
+| `run_all_stress_tests()` | 4 scenarios: normal, 2008 crash, COVID, flash crash |
+| `stress_test_summary()` | Formatted results dict with percentages |
+
+### 4 Crash Scenarios
+| Scenario | Daily Shock Mean | Shock Std | Duration | Correlation Boost |
+|----------|-----------------|-----------|----------|-------------------|
+| Normal | 0.0% | 1.0% | 252 days | 0% |
+| 2008 Crisis | -0.3% | 3.5% | 120 days | +30% |
+| COVID March 2020 | -0.5% | 5.0% | 30 days | +40% |
+| Flash Crash | -2.0% | 8.0% | 5 days | +50% |
+
+### Key Decisions
+1. **GRU, not LSTM** — Fewer parameters (2 gates vs 3). Same performance for our scale. VRAM friendly.
+2. **Sigmoid activation in latent space** — Bounds outputs [0,1], stabilizes GAN training (no exploding values).
+3. **3-phase training** — First learn good representations, then temporal dynamics, then adversarial. Joint from scratch = unstable.
+4. **Moment matching loss** — Generator penalized if mean/std differs from real data. Stabilizes GAN beyond just adversarial signal.
+5. **Cholesky decomposition for Monte Carlo** — Generates correlated random returns from covariance matrix. Standard quantitative finance technique.
+6. **Correlation boost in crisis** — In crashes, all stocks become correlated (panic selling). Boosting off-diagonal correlations simulates this.
+7. **Survival rate** — % of simulations where drawdown stays above -15% threshold. Direct risk metric for portfolio.
+
+### Kyu Banaya (Why / Reasoning)
+1. **TimeGAN kyu?** — Real market data limited hai (10 years = ~2500 trading days). Synthetic data augmentation se RL agent ko zyada training data milta hai. Regular GAN temporal patterns nahi samajhta — TimeGAN specifically time series ke liye designed hai.
+2. **Stress testing kyu?** — "Acha model banaya, but 2008 jaisi crash aaye toh?" VaR/CVaR standard risk metrics hain jo banks mein mandatory hain. Monte Carlo future possibilities explore karta hai. Crash scenarios historical extreme events simulate karte hain.
+3. **CVaR > VaR kyu?** — VaR says "95% chance loss se zyada nahi hogi X". But worst 5% mein kitna lose karenge? CVaR (Expected Shortfall) average worst-case batata hai. More conservative, regulators prefer it.
+
+### Tests: 25/25 PASSING ✅
+- TimeGAN init (3): creates, components exist, stats
+- Training (2): 2D input, 3D pre-windowed input
+- Generation (3): correct shape, finite values, reasonable statistics
+- Data prep (1): sliding window correctness
+- VaR (3): 95% VaR value, CVaR ≤ VaR, 99% worse than 95%
+- Monte Carlo (2): returns StressResult, VaR values present
+- Crash scenarios (4): all scenarios run, 2008 worse than normal, survival rate [0,1], summary format
+- Edge cases (7): single feature, short training, generate-before-train, equal weights, concentrated portfolio, unknown scenario, zero variance
+
+### Git Commit
+```
+Phase 8-9: TimeGAN + Stress Testing (2026-03-16)
+```
+
+---
+
+## PHASES 10-15: Upcoming (Brief)
 
 | Phase | Key Challenge | Reasoning |
 |-------|--------------|-----------|
-| 3: FinBERT | Google News RSS → sentiment scores | Free news source, no API key needed. FinBERT pre-trained on financial text. |
-| 4: Graph | Multi-edge graph (correlation + sector + supply chain) | GNN needs adjacency matrix. 3 types of edges = richer relationships. |
-| 5: T-GAT | Temporal Graph Attention | Attention mechanism = important neighbors get more weight. Temporal = time-varying graphs. |
-| 6: RL Env | Gymnasium environment for portfolio | Standard interface for RL agents. Observation = features + graph embeddings + sentiment. |
-| 7: Deep RL | PPO (primary) + SAC (comparison) | PPO stable hai, SAC sample-efficient. Dono compare karke best pick karenge. |
-| 8-9: GAN | TimeGAN for synthetic data + stress testing | Limited real data (10 years). Synthetic data augmentation. Stress test: "what if 2008 crash?" |
 | 10: NAS | DARTS architecture search | Manually GNN design karna suboptimal. NAS automatically best architecture dhundhta hai. |
 | 11: FL | Federated Learning with differential privacy | Sector-wise clients, privacy-preserving. Novel contribution for thesis. |
 | 12: Quantum | QAOA portfolio optimization | Quantum computing angle for thesis novelty. Compare with classical. |
 | 13: API | FastAPI + Docker | Production deployment. REST API for predictions. |
-| 14: Dashboard | Next.js 14 frontend | Proper UI, not Streamlit. Interactive charts, real-time updates. |
+| 14: Dashboard | React frontend | Proper UI, not Streamlit. Interactive charts, real-time updates. |
 | 15: Thesis | Final document + demo | Everything compiled into thesis format. |
 
 ---
@@ -372,13 +441,13 @@ Output: (n_stocks, 64) stock embeddings
 | 5 | 15/15 | 4/4 | - | ✅ PASS |
 | 6 | 17/17 | 6/6 | - | ✅ PASS |
 | 7 | 12/12 | 4/4 | - | ✅ PASS |
-| 8-9 | -/13 | -/7 | Integration #2 | - |
+| 8-9 | 18/18 | 7/7 | Integration #2 | ✅ PASS |
 | 10 | -/7 | -/3 | - | - |
 | 11 | -/8 | -/4 | - | - |
 | 12 | -/6 | -/3 | - | - |
 | 13 | -/10 | -/5 | Integration #3 | - |
 | 14 | - | - | - | - |
-| **Total** | **119/124** | **26+/54** | **0/11** | **145/189** |
+| **Total** | **137/124** | **33/54** | **0/11** | **170/189** |
 
 ---
 
