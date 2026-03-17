@@ -2560,7 +2560,131 @@ Kyu 20% max? SEBI rules + diversification.
 | E12.2 | Identical assets | All same returns → any selection valid |
 | E12.3 | Single asset | n=1, k=1 → trivial, weight=1.0 |
 
-### File Flow (Updated — Complete P0-P12 Pipeline)
+---
+
+## PHASE 13: API + Docker — Production Deployment
+
+### Kya Banaya?
+
+**FastAPI REST API** — Poore project ke ML models ko REST endpoints ke through expose kiya. Ab koi bhi HTTP request bhejke sentiment analysis, stress testing, quantum optimization use kar sakta hai.
+
+### Kyu API Banaya?
+
+Socho tumne 12 phases mein powerful models banaye — FinBERT, QAOA, TimeGAN, PPO. But yeh sab sirf Python scripts mein band hain. Agar kisi ko use karna hai toh:
+- Bina API: "Mera code clone karo, venv banao, dependencies install karo, Python script chalaao" → Koi nahi karega
+- API ke saath: "POST request bhejo `localhost:8000/api/sentiment` pe, JSON mein text do, result mil jayega" → Koi bhi use kar sakta hai
+
+**Real-world analogy**: Tumne kitchen mein amazing food banaya (ML models), but restaurant (API) ke bina toh koi kha nahi sakta!
+
+### Endpoints Samajhte Hain
+
+```
+GET  /api/health         → "Server alive hai?" → {"status": "ok", "version": "4.0.0"}
+GET  /api/config          → Project settings (seed, device, fp16)
+GET  /api/stocks          → NIFTY 50 stocks + sectors list
+
+POST /api/sentiment       → Ek text do → FinBERT score milega
+     Input:  {"text": "Company profits surged 50%"}
+     Output: {"score": 0.85, "label": "positive", "positive": 0.92, ...}
+
+POST /api/sentiment/batch → Multiple texts ek saath
+     Input:  {"texts": ["Good earnings", "Stock crashed", "Market flat"]}
+     Output: {"count": 3, "results": [...]}
+
+POST /api/stress-test     → Portfolio stress testing
+     Input:  {"n_stocks": 10, "n_simulations": 1000}
+     Output: {"scenarios": [{"scenario": "crash_2008", "var_95": "-3.2%", ...}]}
+
+POST /api/qaoa            → Quantum portfolio optimization
+     Input:  {"n_assets": 6, "k_select": 3}
+     Output: {"quantum_assets": [1,3,5], "quantum_sharpe": 1.23, ...}
+
+POST /api/metrics         → Financial metrics calculate karo
+     Input:  {"returns": [0.01, -0.02, 0.03, ...]}
+     Output: {"sharpe_ratio": 1.45, "max_drawdown": -0.12, ...}
+```
+
+### FastAPI Kyu (Flask Nahi)?
+
+| Feature | Flask | FastAPI |
+|---------|-------|---------|
+| Type validation | Manual | Pydantic automatic |
+| API docs | Manually likhna padta | Auto-generate (`/docs`) |
+| Async support | Nahi | Built-in |
+| Speed | Slow | 2-3x faster |
+| Error messages | Generic | Detailed 422 with field info |
+
+**FastAPI + Pydantic combo**: Agar koi `n_stocks: -5` bheje toh automatic 422 error with message "ensure this value is >= 2". Flask mein yeh sab manually likhna padta.
+
+### Docker Kyu?
+
+**Problem**: "Mere laptop pe chalta hai, but professor ke system pe nahi" — classic developer problem.
+
+**Solution**: Docker ek virtual box hai jismein sab kuch pack hai — Python, dependencies, code, config. Kisi bhi machine pe `docker-compose up` karo, chal jayega.
+
+```yaml
+# docker-compose.yml samjho:
+services:
+  api:        # FastAPI server
+    build: .  # Dockerfile se image banao
+    ports: ["8000:8000"]  # Port expose karo
+    depends_on: db  # DB ready hone ka wait karo
+
+  db:         # PostgreSQL database
+    image: postgres:16-alpine  # Official image
+    ports: ["5432:5432"]
+    healthcheck: pg_isready  # DB ready hai check karo
+```
+
+**Dockerfile** mein CPU-only PyTorch install hota hai (GPU serving ke liye nahi chahiye), source code copy hota hai, aur `uvicorn` se API start hota hai.
+
+### Lazy Imports — Smart Trick
+
+```python
+# NAHI — App start mein 10 seconds lag jayenge
+from src.sentiment.finbert import predict_sentiment  # FinBERT load hoga
+from src.quantum.portfolio import quantum_portfolio_optimize  # Qiskit load hoga
+
+# HAAN — Sirf jab endpoint call ho tab load karo
+@app.post("/api/sentiment")
+def predict(req):
+    from src.sentiment.finbert import predict_sentiment  # Ab load hoga
+    return predict_sentiment(req.text)
+```
+
+Yeh "lazy loading" kehte hain — jab tak zarurat nahi, heavy modules load mat karo. Server start < 1 second mein.
+
+### CORS — Cross-Origin Resource Sharing
+
+React dashboard `localhost:3000` pe chalega, API `localhost:8000` pe. Browser by default alag origin se request block karta hai (security). CORS middleware explicitly allow karta hai:
+
+```python
+app.add_middleware(CORSMiddleware,
+    allow_origins=['http://localhost:3000'],  # React ko allow karo
+    allow_methods=["*"],  # GET, POST, etc. sab
+)
+```
+
+### Testing Strategy
+
+15 tests banaye — har endpoint ka positive test + validation edge cases:
+
+| Test | Kya Check Karta Hai |
+|------|---------------------|
+| T13.1 | Health endpoint 200 + correct fields |
+| T13.2 | Config returns seed, device, fp16 |
+| T13.3 | Stock list with sectors |
+| T13.4-5 | Positive/negative sentiment scores correct |
+| T13.6 | Batch sentiment processes multiple texts |
+| T13.7 | Stress test returns scenarios |
+| T13.8 | QAOA returns quantum + classical |
+| T13.9 | Metrics computed correctly |
+| T13.10 | CORS headers present |
+| E13.1-5 | Invalid inputs → 422 validation errors |
+
+`TestClient` use kiya — yeh in-memory server banata hai, real HTTP server start karne ki zarurat nahi. Fast + isolated.
+
+### File Flow (Updated — Complete P0-P13 Pipeline)
 
 ```
 Phase 0:  config.yaml + seed + logger + metrics
@@ -2575,26 +2699,20 @@ Phase 8:  timegan.py → Synthetic augmented data
 Phase 9:  stress.py → VaR, CVaR, crash scenarios
 Phase 10: search_space.py + darts.py → NAS-optimized architecture
 Phase 11: server.py + client.py + privacy.py → Federated Learning
-Phase 12: qaoa.py + portfolio.py → Quantum portfolio selection  ← NEW
+Phase 12: qaoa.py + portfolio.py → Quantum portfolio selection
+Phase 13: schemas.py + main.py + Docker → REST API  ← NEW
 
-         47 NIFTY stocks
+         All 12 phases of ML models
               |
-         Top 8 by Sharpe ratio (pre-selection)
+         FastAPI REST API (8 endpoints)
               |
-       +------+------+
-       |              |
-    QAOA           Classical
-  (quantum)     (brute-force)
-       |              |
-  Select K=4      Select K=4
-       |              |
-  Markowitz       Markowitz
-   weights         weights
-       |              |
-       +--- compare --+
+       +------+------+------+------+
+       |      |      |      |      |
+   Sentiment Stocks Stress QAOA Metrics
+       |      |      |      |      |
+       +------+------+------+------+
               |
-         Thesis results:
-         "Quantum achieves X% of classical optimal"
+         React Dashboard (Phase 14)
               |
-         Phase 13: API + Docker
+         Thesis + Demo (Phase 15)
 ```

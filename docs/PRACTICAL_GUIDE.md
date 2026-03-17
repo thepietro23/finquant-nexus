@@ -1568,8 +1568,9 @@ fqn1/
 │   ├── quantum/
 │   │   ├── qaoa.py         # QAOA: QUBO, Ising, circuit, COBYLA
 │   │   └── portfolio.py    # Portfolio encoding, Markowitz, scaling
-│   ├── quantum/             # Phase 12: Quantum ML
-│   └── api/                 # Phase 13: FastAPI
+│   └── api/
+│       ├── schemas.py      # Pydantic v2 request/response models
+│       └── main.py         # FastAPI app: 8 REST endpoints
 ├── tests/
 │   ├── test_phase0.py       # 18 tests
 │   ├── test_data.py         # 12 tests
@@ -1582,7 +1583,8 @@ fqn1/
 │   ├── test_gan.py          # 25 tests (TimeGAN + Stress)
 │   ├── test_nas.py          # 18 tests (DARTS + RL grid search)
 │   ├── test_fl.py           # 17 tests (FL + DP + edge cases)
-│   └── test_quantum.py      # 12 tests (QAOA + portfolio + edge cases)
+│   ├── test_quantum.py      # 12 tests (QAOA + portfolio + edge cases)
+│   └── test_api.py          # 15 tests (API endpoints + validation)
 ├── data/                    # Raw CSVs (gitignored)
 │   └── features/            # Feature CSVs + pickle (gitignored)
 ├── models/                  # Saved models (gitignored)
@@ -1591,6 +1593,109 @@ fqn1/
     ├── PROGRESS.md          # Phase tracker
     ├── PHASE_0_1_EXPLAINED.md  # Theory + reasoning
     └── PRACTICAL_GUIDE.md   # THIS FILE — hands-on testing
+```
+
+---
+
+## Phase 13: API + Docker — Manual Testing
+
+### 1. Health Check
+```bash
+# Run API server (background)
+uvicorn src.api.main:app --reload --port 8000
+
+# Health check
+curl http://localhost:8000/api/health
+# → {"status":"ok","version":"4.0.0","project":"FINQUANT-NEXUS v4","phases_complete":13}
+```
+
+### 2. Stock List
+```bash
+curl http://localhost:8000/api/stocks | python -m json.tool
+# → {"count": 47, "stocks": [{"ticker": "RELIANCE.NS", "sector": "Energy"}, ...]}
+```
+
+### 3. Sentiment Analysis
+```bash
+# Single text
+curl -X POST http://localhost:8000/api/sentiment \
+  -H "Content-Type: application/json" \
+  -d '{"text": "Company profits surged 50% with record revenue growth"}'
+# → {"text": "...", "score": 0.85, "label": "positive", ...}
+
+# Batch
+curl -X POST http://localhost:8000/api/sentiment/batch \
+  -H "Content-Type: application/json" \
+  -d '{"texts": ["Strong earnings", "Stock crashed", "Market flat"]}'
+# → {"count": 3, "results": [...]}
+```
+
+### 4. Stress Testing
+```bash
+curl -X POST http://localhost:8000/api/stress-test \
+  -H "Content-Type: application/json" \
+  -d '{"n_stocks": 5, "n_simulations": 500}'
+# → {"n_stocks": 5, "scenarios": [{"scenario": "normal", "var_95": "-1.2%", ...}]}
+```
+
+### 5. QAOA Quantum Optimization
+```bash
+curl -X POST http://localhost:8000/api/qaoa \
+  -H "Content-Type: application/json" \
+  -d '{"n_assets": 4, "k_select": 2, "qaoa_layers": 1, "shots": 64}'
+# → {"quantum_assets": [1,3], "quantum_sharpe": 1.23, "classical_sharpe": 1.45, ...}
+```
+
+### 6. Financial Metrics
+```python
+python -c "
+import requests, numpy as np
+np.random.seed(42)
+returns = np.random.normal(0.001, 0.02, 100).tolist()
+resp = requests.post('http://localhost:8000/api/metrics', json={'returns': returns})
+print(resp.json())
+# → {'sharpe_ratio': ..., 'sortino_ratio': ..., 'max_drawdown': ..., 'n_days': 100}
+"
+```
+
+### 7. Validation Error Testing
+```bash
+# Empty text → 422
+curl -X POST http://localhost:8000/api/sentiment \
+  -H "Content-Type: application/json" \
+  -d '{"text": ""}'
+# → 422 Unprocessable Entity
+
+# Invalid n_stocks → 422
+curl -X POST http://localhost:8000/api/stress-test \
+  -H "Content-Type: application/json" \
+  -d '{"n_stocks": 1}'
+# → 422 (minimum is 2)
+```
+
+### 8. Swagger Docs
+```
+# Open in browser:
+http://localhost:8000/docs     # Swagger UI — interactive API testing
+http://localhost:8000/redoc    # ReDoc — beautiful API documentation
+```
+
+### 9. Docker (Optional — requires Docker Desktop)
+```bash
+# Build and run
+docker-compose up --build
+
+# Test
+curl http://localhost:8000/api/health
+
+# Stop
+docker-compose down
+```
+
+### 10. Run Phase 13 Tests
+```bash
+python -m pytest tests/test_api.py -v
+# → 15 passed (10 unit + 5 edge cases)
 ```
 
 ---

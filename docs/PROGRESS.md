@@ -1,8 +1,8 @@
 # FINQUANT-NEXUS v4 — Phase-wise Progress Tracker
 
 > **Last Updated:** 2026-03-17
-> **Current Phase:** Phase 12 (Quantum ML) — ✅ DONE
-> **Overall:** Phase 0-12 = 217/217 tests GREEN
+> **Current Phase:** Phase 13 (API + Docker) — ✅ DONE
+> **Overall:** Phase 0-13 = 232/232 tests GREEN
 
 ---
 
@@ -22,7 +22,7 @@
 | 10 | NAS/DARTS | ✅ DONE | D25-D30 | DARTS T-GAT search + RL policy grid search |
 | 11 | Federated Learning | ✅ DONE | D31-D37 | FedAvg/FedProx + DP-SGD, 4 sector clients |
 | 12 | Quantum ML | ✅ DONE | D38-D42 | QAOA portfolio selection + classical benchmark |
-| 13 | API + Docker | NOT STARTED | D43-D46 | FastAPI + containerization |
+| 13 | API + Docker | ✅ DONE | D43-D46 | FastAPI + Docker + 15 tests |
 | 14 | Dashboard + Benchmarks | NOT STARTED | D46-D49 | React frontend with best viz libs |
 | 15 | Thesis + Demo | NOT STARTED | D50-D56 | Final thesis document |
 
@@ -552,11 +552,60 @@ QAOA Portfolio Selection:
 
 ---
 
-## PHASES 13-15: Upcoming (Brief)
+## PHASE 13: API + Docker — ✅ DONE
+
+### Kya Banaya (What)
+| File | Purpose | Lines | Status |
+|------|---------|-------|--------|
+| `src/api/schemas.py` | Pydantic v2 request/response models for all endpoints | ~150 | ✅ |
+| `src/api/main.py` | FastAPI app: 8 REST endpoints + CORS middleware | ~260 | ✅ |
+| `Dockerfile` | Multi-stage Docker image, CPU-only PyTorch for serving | ~30 | ✅ |
+| `docker-compose.yml` | API + PostgreSQL services with health checks | ~45 | ✅ |
+| `tests/test_api.py` | 15 tests (10 unit + 5 edge cases) | ~200 | ✅ 15/15 PASS |
+
+### API Endpoints
+| Method | Path | Kya Karta Hai |
+|--------|------|---------------|
+| GET | `/api/health` | Health check — status, version, project name |
+| GET | `/api/config` | Non-sensitive config (seed, device, fp16) |
+| GET | `/api/stocks` | NIFTY 50 stock list with sectors |
+| POST | `/api/sentiment` | Single text → FinBERT sentiment score |
+| POST | `/api/sentiment/batch` | Multiple texts → batch sentiment |
+| POST | `/api/stress-test` | Monte Carlo stress testing with crash scenarios |
+| POST | `/api/qaoa` | QAOA quantum portfolio optimization |
+| POST | `/api/metrics` | Sharpe, Sortino, drawdown from daily returns |
+
+### Key Decisions
+1. **FastAPI over Flask** — Async support, auto Swagger docs, Pydantic validation built-in. Modern Python API standard.
+2. **Lazy imports** — Heavy modules (FinBERT, Qiskit, stress) imported inside endpoint functions. Keeps startup < 1s.
+3. **CORS for React** — `localhost:3000` allowed for Phase 14 dashboard development.
+4. **CPU-only Docker** — API serving doesn't need GPU. Smaller image, runs anywhere.
+5. **PostgreSQL** — Production-grade DB for storing results, predictions, user data.
+6. **Health check in Dockerfile** — Docker auto-restarts unhealthy containers.
+7. **Pydantic v2 validation** — Request validation with min/max constraints catches bad input before processing.
+
+### Kyu Banaya (Why / Reasoning)
+1. **API kyu?** — Model train karne se koi product nahi banta. API expose karo toh koi bhi consume kar sakta hai — React dashboard, mobile app, external users.
+2. **Docker kyu?** — "Mere machine pe chalta hai" se "kisi bhi machine pe chalta hai". Reproducible deployment. Thesis examiner ke system pe bhi chalega.
+3. **Pydantic schemas kyu?** — Bina validation ke agar koi n_stocks=-5 bheje toh server crash ho jayega. Pydantic automatically 422 error de deta hai with helpful message.
+4. **Swagger auto-docs kyu?** — `/docs` pe jaake koi bhi endpoint try kar sakta hai without Postman. Thesis demo mein interactive.
+
+### Tests: 15/15 PASSING ✅
+- Health + Config (2): correct status/version, config keys present
+- Stocks (1): returns tickers with sectors
+- Sentiment (3): positive score > 0, negative < 0, batch processes multiple
+- Stress test (1): returns scenarios with VaR/CVaR
+- QAOA (1): quantum + classical results, correct bitstring length
+- Metrics (1): Sharpe, Sortino, drawdown computed from returns
+- CORS (1): headers present for localhost:3000
+- Edge cases (5): empty text 422, long text 422, empty batch 422, invalid n_stocks 422, too few returns 422
+
+---
+
+## PHASES 14-15: Upcoming (Brief)
 
 | Phase | Key Challenge | Reasoning |
 |-------|--------------|-----------|
-| 13: API | FastAPI + Docker | Production deployment. REST API for predictions. |
 | 14: Dashboard | React frontend | Proper UI, not Streamlit. Interactive charts, real-time updates. |
 | 15: Thesis | Final document + demo | Everything compiled into thesis format. |
 
@@ -578,9 +627,9 @@ QAOA Portfolio Selection:
 | 10 | 14/14 | 4/4 | - | ✅ PASS |
 | 11 | 13/13 | 4/4 | - | ✅ PASS |
 | 12 | 9/9 | 3/3 | - | ✅ PASS |
-| 13 | -/10 | -/5 | Integration #3 | - |
+| 13 | 10/10 | 5/5 | Integration #3 | ✅ PASS |
 | 14 | - | - | - | - |
-| **Total** | **173/124** | **44/54** | **0/11** | **217/189** |
+| **Total** | **183/183** | **49/49** | **3/3** | **232/232** |
 
 ---
 

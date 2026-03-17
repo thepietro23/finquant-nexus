@@ -1,0 +1,49 @@
+# ============================================================
+# FINQUANT-NEXUS v4 — Docker Compose
+# Services: API server + PostgreSQL database
+# ============================================================
+
+version: "3.9"
+
+services:
+  # ── API Server ──────────────────────────────────────────
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: finquant-api
+    ports:
+      - "8000:8000"
+    environment:
+      - PYTHONPATH=/app
+      - DATABASE_URL=postgresql://finquant:finquant@db:5432/finquant
+      - DEVICE=cpu
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+    volumes:
+      - model_cache:/app/models
+      - ./logs:/app/logs
+
+  # ── PostgreSQL ──────────────────────────────────────────
+  db:
+    image: postgres:16-alpine
+    container_name: finquant-db
+    environment:
+      POSTGRES_USER: finquant
+      POSTGRES_PASSWORD: finquant
+      POSTGRES_DB: finquant
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U finquant"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  pgdata:
+  model_cache:
