@@ -55,6 +55,105 @@ export interface MetricsResponse {
   annualized_volatility: number; max_drawdown: number; n_days: number;
 }
 
+export interface PortfolioHolding {
+  ticker: string; sector: string; weight: number;
+  daily_return: number; cumulative_return: number;
+}
+
+export interface PerformancePoint {
+  date: string; portfolio: number; nifty: number;
+}
+
+export interface PortfolioSummaryResponse {
+  portfolio_value: number;
+  sharpe_ratio: number; sortino_ratio: number;
+  annualized_return: number; annualized_volatility: number;
+  max_drawdown: number;
+  n_stocks: number; n_days: number;
+  date_start: string; date_end: string;
+  holdings: PortfolioHolding[];
+  performance: PerformancePoint[];
+  sector_weights: Record<string, number>;
+}
+
+// --- Stock Detail ---
+export interface StockPricePoint { date: string; price: number }
+export interface StockDetailResponse {
+  ticker: string; sector: string;
+  current_price: number; prev_close: number;
+  daily_change: number; daily_change_pct: number;
+  high_52w: number; low_52w: number;
+  cumulative_return_1y: number; annualized_volatility: number;
+  sharpe_ratio: number; max_drawdown: number; weight: number;
+  price_history: StockPricePoint[];
+}
+
+// --- RL Agent ---
+export interface RLRewardPoint { episode: number; ppo_reward: number; sac_reward: number }
+export interface RLStockWeight { ticker: string; sector: string; ppo_weight: number; sac_weight: number }
+export interface RLSummaryResponse {
+  ppo_episodes: number; sac_episodes: number;
+  ppo_avg_reward: number; sac_avg_reward: number;
+  ppo_sharpe: number; sac_sharpe: number;
+  ppo_max_drawdown: number; sac_max_drawdown: number;
+  reward_curve: RLRewardPoint[];
+  weights: RLStockWeight[];
+  constraints: Record<string, number>;
+}
+
+// --- NAS Lab ---
+export interface AlphaPoint { epoch: number; linear: number; conv1d: number; attention: number; skip: number; zero: number }
+export interface NASCompareItem { metric: string; nas_value: number; handcraft_value: number }
+export interface NASLabResponse {
+  search_epochs: number; best_op: string;
+  nas_sharpe: number; improvement_pct: number;
+  best_architecture: string[];
+  alpha_convergence: AlphaPoint[];
+  comparison: NASCompareItem[];
+}
+
+// --- Federated Learning ---
+export interface FLRoundPoint {
+  round: number; fedprox_loss: number; fedavg_loss: number;
+  client_0_loss: number; client_1_loss: number; client_2_loss: number; client_3_loss: number;
+}
+export interface FLClientInfo { client_id: number; name: string; sectors: string[]; n_stocks: number }
+export interface FLFairnessItem { client: string; with_fl: number; without_fl: number }
+export interface FLSummaryResponse {
+  n_rounds: number; n_clients: number; strategy: string;
+  privacy_epsilon: number; privacy_delta: number; global_sharpe: number;
+  clients: FLClientInfo[];
+  convergence: FLRoundPoint[];
+  fairness: FLFairnessItem[];
+}
+
+// --- GNN Summary ---
+export interface GNNNode {
+  ticker: string; sector: string; degree: number;
+  weight: number; daily_return: number;
+}
+export interface GNNEdge {
+  source: string; target: string; type: string; weight: number;
+}
+export interface TopConnection {
+  stock_a: string; stock_b: string; correlation: number; type: string;
+}
+export interface SectorConnectivity {
+  sector_a: string; sector_b: string; n_edges: number; avg_weight: number;
+}
+export interface GNNSummaryResponse {
+  n_nodes: number; n_edges: number;
+  sector_edges: number; supply_chain_edges: number; correlation_edges: number;
+  density: number; avg_degree: number;
+  nodes: GNNNode[];
+  edges: GNNEdge[];
+  attention_matrix: number[][];
+  attention_tickers: string[];
+  top_connections: TopConnection[];
+  sector_connectivity: SectorConnectivity[];
+  degree_distribution: Record<string, number>;
+}
+
 // --- API Calls ---
 
 export const api = {
@@ -87,4 +186,22 @@ export const api = {
     fetchJSON<MetricsResponse>('/metrics', {
       method: 'POST', body: JSON.stringify({ returns }),
     }),
+
+  portfolioSummary: () =>
+    fetchJSON<PortfolioSummaryResponse>('/portfolio-summary'),
+
+  stockDetail: (ticker: string) =>
+    fetchJSON<StockDetailResponse>(`/stock/${encodeURIComponent(ticker)}`),
+
+  rlSummary: () =>
+    fetchJSON<RLSummaryResponse>('/rl-summary'),
+
+  nasSummary: () =>
+    fetchJSON<NASLabResponse>('/nas-summary'),
+
+  flSummary: () =>
+    fetchJSON<FLSummaryResponse>('/fl-summary'),
+
+  gnnSummary: () =>
+    fetchJSON<GNNSummaryResponse>('/gnn-summary'),
 };

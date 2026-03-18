@@ -8,7 +8,20 @@ import {
 } from 'recharts';
 import Card from '../components/ui/Card';
 import PageHeader from '../components/ui/PageHeader';
+import PageInfoPanel from '../components/ui/PageInfoPanel';
 import Badge from '../components/ui/Badge';
+
+const PAGE_INFO = {
+  title: 'Sentiment Monitor — What Does This Page Show?',
+  sections: [
+    { heading: 'What is this page?', text: 'Uses FinBERT (a BERT model fine-tuned on financial text by ProsusAI) to analyze the sentiment of financial news headlines. Score ranges from -1 (very negative) to +1 (very positive).' },
+    { heading: 'Single text analysis', text: 'Type any financial headline and get instant sentiment prediction. The model outputs positive/negative/neutral probabilities and a composite score.' },
+    { heading: 'Batch analysis', text: '8 sample Indian market headlines analyzed together. Shows how sentiment varies across different news types — earnings reports, regulatory actions, market events.' },
+    { heading: 'Score gradient bar', text: 'Visual representation of the sentiment score on a -1 to +1 scale. Red = negative, Yellow = neutral, Green = positive. The dot shows where your text falls.' },
+    { heading: 'Why FinBERT?', text: 'General NLP models misinterpret financial language ("bearish" is negative in finance, neutral elsewhere). FinBERT was trained on 10,000+ financial texts for domain-specific accuracy.' },
+    { heading: 'How is it used in the system?', text: 'Sentiment scores are fed as input features to the RL agent. The agent can consider market mood (from news) alongside price data when making allocation decisions.' },
+  ],
+};
 
 // Sample financial headlines for demo
 const SAMPLE_HEADLINES = [
@@ -76,11 +89,14 @@ export default function Sentiment() {
 
   return (
     <div>
-      <PageHeader
-        title="Sentiment Monitor"
-        subtitle="FinBERT NLP — real-time sentiment analysis on financial text"
-        icon={<MessageSquare size={24} />}
-      />
+      <div className="flex items-center justify-between">
+        <PageHeader
+          title="Sentiment Monitor"
+          subtitle="FinBERT NLP — real-time sentiment analysis on financial text"
+          icon={<MessageSquare size={24} />}
+        />
+        <PageInfoPanel title={PAGE_INFO.title} sections={PAGE_INFO.sections} />
+      </div>
 
       {/* Single Text Analysis */}
       <Card className="mb-6">

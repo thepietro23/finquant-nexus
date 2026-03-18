@@ -10,8 +10,43 @@ import type { ScenarioResult } from '../lib/api';
 import Card from '../components/ui/Card';
 import MetricCard from '../components/ui/MetricCard';
 import PageHeader from '../components/ui/PageHeader';
+import PageInfoPanel from '../components/ui/PageInfoPanel';
+import MetricInfoPanel from '../components/ui/MetricInfoPanel';
 import Badge from '../components/ui/Badge';
 import { staggerContainer } from '../lib/animations';
+
+const PAGE_INFO = {
+  title: 'Stress Testing — What Does This Page Show?',
+  sections: [
+    { heading: 'What is stress testing?', text: 'Tests your portfolio against extreme market conditions using Monte Carlo simulation. Generates thousands of possible future scenarios to estimate risk metrics like VaR and CVaR.' },
+    { heading: 'Monte Carlo simulation', text: 'Randomly generates thousands of future price paths based on historical statistics (mean, volatility, correlations). Like rolling dice 10,000 times to see what could happen.' },
+    { heading: '4 crash scenarios', text: 'Normal (typical market), 2008 Crisis (3.5% daily vol, +30% correlation), COVID Crash (5% vol, +40% corr), Flash Crash (8% vol, 5 days). Each models a real historical pattern.' },
+    { heading: 'VaR (Value at Risk)', text: '95% VaR = "with 95% confidence, the portfolio will NOT lose more than this amount." It is a threshold — the boundary of the worst 5% outcomes.' },
+    { heading: 'CVaR (Conditional VaR)', text: 'Also called Expected Shortfall. "If you ARE in the worst 5%, what is the average loss?" CVaR is always worse than VaR and is considered more conservative.' },
+    { heading: 'Survival rate', text: 'Percentage of simulations where the portfolio stays above a minimum threshold (does not get wiped out). Higher = more resilient portfolio.' },
+  ],
+};
+
+const METRIC_DETAILS: Record<string, { what: string; why: string; how: string; good: string }> = {
+  'VaR (95%)': {
+    what: 'Value at Risk at 95% confidence. The maximum loss that will NOT be exceeded in 95% of scenarios.',
+    why: 'Used by banks and regulators worldwide (Basel III). Answers: "What is the worst reasonable loss?"',
+    how: 'Sort all simulated returns. VaR = the 5th percentile return. If 1000 simulations, it is the 50th worst.',
+    good: 'Closer to 0% = safer | -1% to -3% typical for diversified portfolios | > -5% = high risk',
+  },
+  'CVaR (95%)': {
+    what: 'Conditional VaR (Expected Shortfall). Average loss in the worst 5% of scenarios. Always worse than VaR.',
+    why: 'VaR only tells you the boundary. CVaR tells you how bad it gets BEYOND that boundary — more useful for tail risk.',
+    how: 'Average of all returns worse than VaR. If VaR is at the 50th worst out of 1000, CVaR = average of the 50 worst.',
+    good: 'CVaR should be close to VaR = thin tails (normal-ish). CVaR much worse than VaR = fat tails (dangerous crashes).',
+  },
+  'Survival Rate': {
+    what: 'Percentage of simulated paths where the portfolio value stays above a threshold (e.g., 80% of initial value).',
+    why: 'Even if average return is positive, some paths may crash. Survival rate shows how likely you are to avoid catastrophic loss.',
+    how: 'Count simulations where final portfolio value > threshold. Survival = count / total simulations × 100.',
+    good: '> 95% = excellent resilience | 90-95% = good | < 90% = concerning for risk-averse investors',
+  },
+};
 
 // Mock Monte Carlo paths
 function genMonteCarloPaths(n = 50, days = 60) {
@@ -32,6 +67,7 @@ export default function StressTesting() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [scenarios, setScenarios] = useState<ScenarioResult[]>([]);
+  const [expandedMetric, setExpandedMetric] = useState<string | null>(null);
   const [nStocks, setNStocks] = useState(10);
   const [nSim, setNSim] = useState(1000);
   const [mcPaths] = useState(() => genMonteCarloPaths());
@@ -63,11 +99,14 @@ export default function StressTesting() {
 
   return (
     <div>
-      <PageHeader
-        title="Stress Testing"
-        subtitle="VaR, CVaR, Monte Carlo simulation — 4 crash scenarios"
-        icon={<AlertTriangle size={24} />}
-      />
+      <div className="flex items-center justify-between">
+        <PageHeader
+          title="Stress Testing"
+          subtitle="VaR, CVaR, Monte Carlo simulation — 4 crash scenarios"
+          icon={<AlertTriangle size={24} />}
+        />
+        <PageInfoPanel title={PAGE_INFO.title} sections={PAGE_INFO.sections} />
+      </div>
 
       {/* Controls */}
       <Card className="mb-6">
@@ -94,13 +133,28 @@ export default function StressTesting() {
         {error && <p className="mt-3 text-sm text-loss">{error}</p>}
       </Card>
 
-      {/* Mock VaR Gauges */}
-      <motion.div variants={staggerContainer} initial="hidden" animate="visible"
-        className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
-        <MetricCard title="VaR (95%)" value={-2.34} decimals={2} suffix="%" icon={<TrendingDown size={18} />} />
-        <MetricCard title="CVaR (95%)" value={-3.87} decimals={2} suffix="%" icon={<Shield size={18} />} />
-        <MetricCard title="Survival Rate" value={87.3} decimals={1} suffix="%" change={0.05} />
-      </motion.div>
+      {/* VaR Gauges — show real values from normal scenario after running */}
+      {scenarios.length > 0 && (() => {
+        const normal = scenarios.find(s => s.scenario === 'normal');
+        if (!normal) return null;
+        const var95 = parseFloat(normal.var_95) || 0;
+        const cvar95 = parseFloat(normal.cvar_95) || 0;
+        const survival = parseFloat(normal.survival_rate) || 0;
+        return (
+          <>
+            <motion.div variants={staggerContainer} initial="hidden" animate="visible"
+              className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-2">
+              <MetricCard title="VaR (95%)" value={var95 * 100} decimals={2} suffix="%" icon={<TrendingDown size={18} />}
+                onClick={() => setExpandedMetric(m => m === 'VaR (95%)' ? null : 'VaR (95%)')} active={expandedMetric === 'VaR (95%)'} />
+              <MetricCard title="CVaR (95%)" value={cvar95 * 100} decimals={2} suffix="%" icon={<Shield size={18} />}
+                onClick={() => setExpandedMetric(m => m === 'CVaR (95%)' ? null : 'CVaR (95%)')} active={expandedMetric === 'CVaR (95%)'} />
+              <MetricCard title="Survival Rate" value={survival * 100} decimals={1} suffix="%"
+                onClick={() => setExpandedMetric(m => m === 'Survival Rate' ? null : 'Survival Rate')} active={expandedMetric === 'Survival Rate'} />
+            </motion.div>
+            <MetricInfoPanel expandedMetric={expandedMetric} onClose={() => setExpandedMetric(null)} details={METRIC_DETAILS} />
+          </>
+        );
+      })()}
 
       {/* Monte Carlo Fan Chart */}
       <Card className="mb-6">

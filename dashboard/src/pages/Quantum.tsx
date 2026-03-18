@@ -9,13 +9,49 @@ import type { QAOAResponse } from '../lib/api';
 import Card from '../components/ui/Card';
 import MetricCard from '../components/ui/MetricCard';
 import PageHeader from '../components/ui/PageHeader';
+import PageInfoPanel from '../components/ui/PageInfoPanel';
+import MetricInfoPanel from '../components/ui/MetricInfoPanel';
 import { staggerContainer } from '../lib/animations';
 import { motion } from 'framer-motion';
+
+const PAGE_INFO = {
+  title: 'Quantum Lab — What Does This Page Show?',
+  sections: [
+    { heading: 'What is QAOA?', text: 'Quantum Approximate Optimization Algorithm — uses quantum mechanics to solve the combinatorial problem of selecting the best K stocks out of N candidates for maximum Sharpe Ratio.' },
+    { heading: 'Why quantum?', text: 'Choosing 20 stocks from 50 = 47 billion combinations. Classical brute-force is impractical at scale. QAOA explores many combinations simultaneously via quantum superposition.' },
+    { heading: 'How it works', text: 'Problem → QUBO → Ising Hamiltonian → parameterized quantum circuit → classical optimizer tunes parameters → measure → best bitstring = best stocks.' },
+    { heading: 'Circuit diagram', text: 'Shows qubit wires (one per asset), Hadamard gates (superposition), Cost layers (encode the optimization objective), Mixer layers (explore solutions), Measurement (read answer).' },
+    { heading: 'Quantum vs Classical', text: 'Compares QAOA-selected portfolio Sharpe against brute-force optimal. On small N, classical wins (it checks everything). Quantum advantage emerges at larger N where brute-force is infeasible.' },
+    { heading: 'Current limitation', text: 'Running on Qiskit Aer simulator (not real quantum hardware). Results are exact simulation — same algorithm would run on IBM Quantum or IonQ hardware.' },
+  ],
+};
+
+const METRIC_DETAILS: Record<string, { what: string; why: string; how: string; good: string }> = {
+  'Quantum Sharpe': {
+    what: 'Sharpe Ratio of the portfolio selected by the QAOA quantum algorithm.',
+    why: 'Shows how well the quantum approach performs. If close to or better than classical, quantum optimization is viable for portfolio selection.',
+    how: 'QAOA selects K assets via bitstring. Equal-weight portfolio of selected assets. Sharpe = (Return - 7%) / Volatility.',
+    good: 'Close to Classical Sharpe = QAOA found a good solution | > Classical = quantum found a better combination (possible due to different exploration)',
+  },
+  'Classical Sharpe': {
+    what: 'Sharpe Ratio of the best possible K-stock portfolio found by brute-force enumeration of all combinations.',
+    why: 'This is the ground truth — the globally optimal answer. QAOA is judged by how close it gets to this benchmark.',
+    how: 'Try every C(N,K) combination. For each, compute equal-weight Sharpe. Return the best.',
+    good: 'This IS the best possible — it serves as the upper bound for QAOA performance.',
+  },
+  'Qubits': {
+    what: 'Number of quantum bits used. One qubit per candidate asset (0 = skip, 1 = select).',
+    why: 'More qubits = larger problem. Current quantum hardware supports ~100-1000 noisy qubits. Our 2-12 qubit problems run perfectly on simulator.',
+    how: 'N assets → N qubits. Circuit depth = 2 × QAOA_layers + 1 (Hadamard + Cost/Mixer pairs).',
+    good: '< 20 qubits = easily simulable | 20-50 = hard to simulate classically | > 50 = quantum advantage territory',
+  },
+};
 
 export default function Quantum() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<QAOAResponse | null>(null);
+  const [expandedMetric, setExpandedMetric] = useState<string | null>(null);
   const [nAssets, setNAssets] = useState(6);
   const [kSelect, setKSelect] = useState(3);
   const [layers, setLayers] = useState(2);
@@ -49,11 +85,14 @@ export default function Quantum() {
 
   return (
     <div>
-      <PageHeader
-        title="Quantum Lab"
-        subtitle="QAOA portfolio selection — Qiskit simulator + classical benchmark"
-        icon={<Atom size={24} />}
-      />
+      <div className="flex items-center justify-between">
+        <PageHeader
+          title="Quantum Lab"
+          subtitle="QAOA portfolio selection — Qiskit simulator + classical benchmark"
+          icon={<Atom size={24} />}
+        />
+        <PageInfoPanel title={PAGE_INFO.title} sections={PAGE_INFO.sections} />
+      </div>
 
       {/* Controls */}
       <Card className="mb-6">
@@ -89,15 +128,16 @@ export default function Quantum() {
       {result && (
         <>
           <motion.div variants={staggerContainer} initial="hidden" animate="visible"
-            className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-            <MetricCard title="Quantum Sharpe" value={result.quantum_sharpe} decimals={4}
-              icon={<Atom size={18} />} />
-            <MetricCard title="Classical Sharpe" value={result.classical_sharpe} decimals={4}
-              icon={<Cpu size={18} />} />
-            <MetricCard title="Qubits" value={result.n_qubits} decimals={0}
-              icon={<Zap size={18} />} />
+            className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-2">
+            <MetricCard title="Quantum Sharpe" value={result.quantum_sharpe} decimals={4} icon={<Atom size={18} />}
+              onClick={() => setExpandedMetric(m => m === 'Quantum Sharpe' ? null : 'Quantum Sharpe')} active={expandedMetric === 'Quantum Sharpe'} />
+            <MetricCard title="Classical Sharpe" value={result.classical_sharpe} decimals={4} icon={<Cpu size={18} />}
+              onClick={() => setExpandedMetric(m => m === 'Classical Sharpe' ? null : 'Classical Sharpe')} active={expandedMetric === 'Classical Sharpe'} />
+            <MetricCard title="Qubits" value={result.n_qubits} decimals={0} icon={<Zap size={18} />}
+              onClick={() => setExpandedMetric(m => m === 'Qubits' ? null : 'Qubits')} active={expandedMetric === 'Qubits'} />
             <MetricCard title="Function Evals" value={result.n_function_evals} decimals={0} />
           </motion.div>
+          <MetricInfoPanel expandedMetric={expandedMetric} onClose={() => setExpandedMetric(null)} details={METRIC_DETAILS} />
 
           {/* Circuit Diagram (simplified SVG) */}
           <Card className="mb-6">

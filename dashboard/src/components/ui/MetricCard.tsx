@@ -13,6 +13,8 @@ interface MetricCardProps {
   change?: number;
   sparkData?: number[];
   icon?: React.ReactNode;
+  onClick?: () => void;
+  active?: boolean;
 }
 
 function useAnimatedNumber(end: number, decimals: number, duration = 1200) {
@@ -45,7 +47,7 @@ function useAnimatedNumber(end: number, decimals: number, duration = 1200) {
 
 export default function MetricCard({
   title, value, decimals = 2, prefix = '', suffix = '',
-  change, sparkData, icon,
+  change, sparkData, icon, onClick, active,
 }: MetricCardProps) {
   const animated = useAnimatedNumber(value, decimals);
 
@@ -55,8 +57,11 @@ export default function MetricCard({
       initial="hidden"
       whileInView="visible"
       viewport={{ once: true }}
-      className="bg-white rounded-2xl border border-border p-5 transition-all duration-300
-        hover:shadow-[0_10px_25px_rgba(193,95,60,0.08)] hover:border-l-[3px] hover:border-l-primary hover:-translate-y-0.5"
+      onClick={onClick}
+      className={`bg-white rounded-2xl border p-5 transition-all duration-300
+        hover:shadow-[0_10px_30px_rgba(193,95,60,0.12)] hover:-translate-y-1 hover:bg-[#FFFBF8]
+        ${active ? 'border-primary border-l-[3px] shadow-[0_10px_30px_rgba(193,95,60,0.12)] bg-[#FFFBF8]' : 'border-border hover:border-l-[3px] hover:border-l-primary'}
+        ${onClick ? 'cursor-pointer' : ''}`}
     >
       <div className="flex items-center justify-between mb-3">
         <span className="text-sm font-medium text-text-secondary">{title}</span>

@@ -4,43 +4,47 @@
  * Shows NIFTY 50 stocks as nodes connected by:
  *   - Sector edges (same sector)
  *   - Supply chain edges (business relationships)
- *   - Correlation edges (|corr| > 0.6)
+ *   - Correlation edges (|corr| > 0.4)
  *
- * Node size = RL portfolio weight
+ * Node size = degree (connections)
  * Node color = sector
  * Edge color = relationship type
+ * All data from real backend (no Math.random)
  */
 import { useEffect, useState, useMemo, useRef } from 'react';
 import { GitGraph } from 'lucide-react';
 import { api } from '../lib/api';
-import type { StockInfo } from '../lib/api';
+import type { GNNSummaryResponse } from '../lib/api';
 import Card from '../components/ui/Card';
 import PageHeader from '../components/ui/PageHeader';
+import PageInfoPanel from '../components/ui/PageInfoPanel';
 import Badge from '../components/ui/Badge';
+
+const PAGE_INFO = {
+  title: 'Graph Visualization — What Does This Page Show?',
+  sections: [
+    { heading: 'What is this?', text: 'Interactive force-directed graph showing NIFTY 50 stocks as nodes and their relationships as edges. The layout is physics-based — connected stocks cluster together naturally.' },
+    { heading: 'Node properties', text: 'Size = number of connections (degree). Color = sector (Banking=orange, IT=purple, etc.). Click any node to see detailed info in the right panel.' },
+    { heading: 'Edge types', text: 'Sector (same industry), Supply Chain (business relationships), Correlation (60-day price co-movement > 0.4). Toggle each type on/off.' },
+    { heading: 'Force simulation', text: 'Physics engine with repulsion (nodes push apart), attraction (connected nodes pull together), and gravity (keeps everything centered). Runs 150 frames then stabilizes.' },
+    { heading: 'What to look for', text: 'Banking stocks cluster together, IT stocks form another cluster — this shows GNN correctly identifies sector relationships. Cross-sector correlation edges connect clusters.' },
+  ],
+};
 
 // ── Sector colors ──
 const SECTOR_COLORS: Record<string, string> = {
   'Banking': '#C15F3C', 'Finance': '#A34E30', 'IT': '#6366F1',
   'Telecom': '#8B5CF6', 'Pharma': '#0D9488', 'FMCG': '#16A34A',
   'Energy': '#F59E0B', 'Auto': '#3B82F6', 'Metals': '#EC4899',
-  'Infrastructure': '#14B8A6', 'Unknown': '#9CA3AF',
+  'Infrastructure': '#14B8A6', 'Infra': '#14B8A6', 'Others': '#9CA3AF',
+  'Unknown': '#9CA3AF',
 };
 
-const EDGE_COLORS = {
+const EDGE_COLORS: Record<string, string> = {
   sector: '#C15F3C',
   supply: '#6366F1',
   correlation: '#0D9488',
 };
-
-// ── Supply chain relationships (from stocks.py) ──
-const SUPPLY_CHAIN: [string, string][] = [
-  ['TATASTEEL.NS', 'TATAMOTORS.NS'], ['TATASTEEL.NS', 'MARUTI.NS'],
-  ['JSWSTEEL.NS', 'MARUTI.NS'], ['RELIANCE.NS', 'ONGC.NS'],
-  ['RELIANCE.NS', 'BPCL.NS'], ['TCS.NS', 'INFY.NS'],
-  ['HDFCBANK.NS', 'BAJFINANCE.NS'], ['ICICIBANK.NS', 'SBIN.NS'],
-  ['HINDUNILVR.NS', 'ITC.NS'], ['BHARTIARTL.NS', 'TECHM.NS'],
-  ['LT.NS', 'NTPC.NS'], ['LT.NS', 'POWERGRID.NS'],
-];
 
 interface GraphNode {
   id: string;
@@ -50,14 +54,16 @@ interface GraphNode {
   y: number;
   vx: number;
   vy: number;
-  weight: number; // RL portfolio weight
+  degree: number;
   dailyReturn: number;
+  weight: number;
 }
 
 interface GraphEdge {
   source: string;
   target: string;
-  type: 'sector' | 'supply' | 'correlation';
+  type: string;
+  weight: number;
 }
 
 // ── Simple force simulation ──
@@ -98,7 +104,8 @@ function applyForces(nodes: GraphNode[], edges: GraphEdge[], width: number, heig
     const dx = t.x - s.x;
     const dy = t.y - s.y;
     const dist = Math.sqrt(dx * dx + dy * dy);
-    const force = dist * attraction;
+    // Stronger attraction for higher correlation weight
+    const force = dist * attraction * (0.5 + e.weight * 0.5);
     s.vx += dx * force;
     s.vy += dy * force;
     t.vx -= dx * force;
@@ -118,85 +125,70 @@ function applyForces(nodes: GraphNode[], edges: GraphEdge[], width: number, heig
 }
 
 export default function GraphVisualization() {
-  const [stocks, setStocks] = useState<StockInfo[]>([]);
+  const [gnnData, setGnnData] = useState<GNNSummaryResponse | null>(null);
   const [nodes, setNodes] = useState<GraphNode[]>([]);
   const [edges, setEdges] = useState<GraphEdge[]>([]);
   const [hovered, setHovered] = useState<string | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [showEdgeType, setShowEdgeType] = useState({ sector: true, supply: true, correlation: true });
+  const [loading, setLoading] = useState(true);
   const svgRef = useRef<SVGSVGElement>(null);
   const animRef = useRef<number>(0);
   const [, setTick] = useState(0);
 
   const W = 900, H = 600;
 
-  // Load stocks
+  // Load GNN data from backend (real data)
   useEffect(() => {
-    api.stocks().then(d => setStocks(d.stocks)).catch(() => {});
+    api.gnnSummary()
+      .then(d => { setGnnData(d); setLoading(false); })
+      .catch(() => setLoading(false));
   }, []);
 
-  // Build graph when stocks load
+  // Build graph when data loads
   useEffect(() => {
-    if (stocks.length === 0) return;
+    if (!gnnData) return;
 
-    // Create nodes with random initial positions + mock RL weights
-    const sectorGroups: Record<string, number[]> = {};
-    const newNodes: GraphNode[] = stocks.map((s, i) => {
-      if (!sectorGroups[s.sector]) sectorGroups[s.sector] = [];
-      sectorGroups[s.sector].push(i);
-      const angle = (i / stocks.length) * Math.PI * 2;
-      const r = 150 + Math.random() * 100;
+    // Deterministic initial positions: arrange by sector in circle segments
+    const sectorList = [...new Set(gnnData.nodes.map(n => n.sector))];
+    const sectorAngle: Record<string, number> = {};
+    sectorList.forEach((s, i) => { sectorAngle[s] = (i / sectorList.length) * Math.PI * 2; });
+
+    // Seed a simple LCG for deterministic "jitter" without Math.random
+    let seed = 42;
+    const nextRand = () => { seed = (seed * 1664525 + 1013904223) & 0x7fffffff; return seed / 0x7fffffff; };
+
+    const sectorCounters: Record<string, number> = {};
+    const newNodes: GraphNode[] = gnnData.nodes.map(n => {
+      if (!sectorCounters[n.sector]) sectorCounters[n.sector] = 0;
+      const idx = sectorCounters[n.sector]++;
+      const baseAngle = sectorAngle[n.sector] || 0;
+      const spread = 0.4; // radians spread within sector
+      const angle = baseAngle + (idx - 2) * spread * 0.3 + (nextRand() - 0.5) * 0.3;
+      const r = 150 + nextRand() * 100;
       return {
-        id: s.ticker,
-        ticker: s.ticker.replace('.NS', ''),
-        sector: s.sector,
+        id: n.ticker,
+        ticker: n.ticker,
+        sector: n.sector,
         x: W / 2 + Math.cos(angle) * r,
         y: H / 2 + Math.sin(angle) * r,
         vx: 0, vy: 0,
-        weight: Math.round((Math.random() * 8 + 0.5) * 10) / 10, // RL weight 0.5-8.5%
-        dailyReturn: Math.round((Math.random() - 0.45) * 6 * 100) / 100,
+        degree: n.degree,
+        dailyReturn: n.daily_return,
+        weight: n.weight,
       };
     });
 
-    // Build edges
-    const newEdges: GraphEdge[] = [];
-
-    // Sector edges — connect stocks in same sector
-    Object.values(sectorGroups).forEach(indices => {
-      for (let i = 0; i < indices.length; i++) {
-        for (let j = i + 1; j < indices.length; j++) {
-          newEdges.push({
-            source: stocks[indices[i]].ticker,
-            target: stocks[indices[j]].ticker,
-            type: 'sector',
-          });
-        }
-      }
-    });
-
-    // Supply chain edges
-    SUPPLY_CHAIN.forEach(([s, t]) => {
-      if (stocks.find(st => st.ticker === s) && stocks.find(st => st.ticker === t)) {
-        newEdges.push({ source: s, target: t, type: 'supply' });
-      }
-    });
-
-    // Correlation edges (mock — random high correlation pairs)
-    const tickerList = stocks.map(s => s.ticker);
-    const corrSet = new Set<string>();
-    for (let i = 0; i < 40; i++) {
-      const a = tickerList[Math.floor(Math.random() * tickerList.length)];
-      const b = tickerList[Math.floor(Math.random() * tickerList.length)];
-      const key = [a, b].sort().join('|');
-      if (a !== b && !corrSet.has(key)) {
-        corrSet.add(key);
-        newEdges.push({ source: a, target: b, type: 'correlation' });
-      }
-    }
+    const newEdges: GraphEdge[] = gnnData.edges.map(e => ({
+      source: e.source,
+      target: e.target,
+      type: e.type,
+      weight: e.weight,
+    }));
 
     setNodes(newNodes);
     setEdges(newEdges);
-  }, [stocks]);
+  }, [gnnData]);
 
   // Force simulation animation
   useEffect(() => {
@@ -214,13 +206,11 @@ export default function GraphVisualization() {
     }
     animRef.current = requestAnimationFrame(step);
     return () => cancelAnimationFrame(animRef.current);
-  }, [nodes.length]); // Only re-run when nodes first populate
+  }, [nodes.length]);
 
   // Filter edges by type
-  const visibleEdges = edges.filter(e => showEdgeType[e.type]);
+  const visibleEdges = edges.filter(e => showEdgeType[e.type as keyof typeof showEdgeType]);
 
-  // nodeMap rebuilds on tick because force sim mutates node positions in-place
-  // Using a plain Map (no useMemo) since tick changes every frame during animation
   const nodeMap = new Map(nodes.map(n => [n.id, n]));
 
   // Highlighted edges (connected to hovered/selected node)
@@ -244,13 +234,22 @@ export default function GraphVisualization() {
     correlation: edges.filter(e => e.type === 'correlation').length,
   };
 
+  if (loading) return (
+    <div className="flex items-center justify-center h-64">
+      <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary" />
+    </div>
+  );
+
   return (
     <div>
-      <PageHeader
-        title="Graph Visualization"
-        subtitle="Interactive NIFTY 50 stock network — edges by sector, supply chain, correlation. Node size = RL portfolio weight."
-        icon={<GitGraph size={24} />}
-      />
+      <div className="flex items-center justify-between">
+        <PageHeader
+          title="Graph Visualization"
+          subtitle="Interactive NIFTY 50 stock network — real correlations, 3 edge types"
+          icon={<GitGraph size={24} />}
+        />
+        <PageInfoPanel title={PAGE_INFO.title} sections={PAGE_INFO.sections} />
+      </div>
 
       {/* Edge type filters */}
       <div className="flex flex-wrap items-center gap-3 mb-4">
@@ -286,8 +285,8 @@ export default function GraphVisualization() {
               return (
                 <line key={i}
                   x1={s.x} y1={s.y} x2={t.x} y2={t.y}
-                  stroke={EDGE_COLORS[e.type]}
-                  strokeWidth={isHighlighted ? 2 : 0.6}
+                  stroke={EDGE_COLORS[e.type] || '#E5E7EB'}
+                  strokeWidth={isHighlighted ? 2 + e.weight : 0.6 + e.weight * 0.5}
                   opacity={highlightId ? (isHighlighted ? 0.8 : 0.08) : 0.25}
                 />
               );
@@ -295,7 +294,7 @@ export default function GraphVisualization() {
 
             {/* Nodes */}
             {nodes.map(n => {
-              const r = 6 + n.weight * 2; // Node size by RL weight
+              const r = 6 + n.degree * 1.2; // Node size by degree
               const color = SECTOR_COLORS[n.sector] || '#9CA3AF';
               const isHighlighted = !highlightId || n.id === highlightId || connectedNodes.has(n.id);
               const isSelected = n.id === selected;
@@ -342,7 +341,11 @@ export default function GraphVisualization() {
                   <Badge variant="neutral">{selectedNode.sector}</Badge>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-text-secondary">RL Weight</span>
+                  <span className="text-text-secondary">Connections</span>
+                  <span className="font-mono font-semibold">{selectedNode.degree}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-text-secondary">Portfolio Weight</span>
                   <span className="font-mono font-semibold">{selectedNode.weight}%</span>
                 </div>
                 <div className="flex justify-between">
@@ -354,21 +357,30 @@ export default function GraphVisualization() {
                   </span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-text-secondary">Connections</span>
+                  <span className="text-text-secondary">Neighbors</span>
                   <span className="font-mono">{connectedNodes.size}</span>
                 </div>
               </div>
 
-              {/* Connected stocks */}
+              {/* Connected stocks by edge type */}
               <h4 className="text-xs font-medium text-text-secondary mt-4 mb-2">Connected Stocks</h4>
               <div className="flex flex-wrap gap-1.5">
-                {[...connectedNodes].slice(0, 12).map(id => {
+                {[...connectedNodes].slice(0, 15).map(id => {
                   const node = nodeMap.get(id);
                   if (!node) return null;
+                  const edge = visibleEdges.find(
+                    e => (e.source === selectedNode.id && e.target === id) ||
+                         (e.target === selectedNode.id && e.source === id)
+                  );
                   return (
-                    <span key={id} className="text-[10px] font-mono px-2 py-0.5 rounded-md bg-bg-card border border-border-light"
-                      style={{ borderLeftColor: SECTOR_COLORS[node.sector] || '#9CA3AF', borderLeftWidth: 2 }}>
+                    <span key={id}
+                      className="text-[10px] font-mono px-2 py-0.5 rounded-md bg-bg-card border border-border-light"
+                      style={{
+                        borderLeftColor: edge ? (EDGE_COLORS[edge.type] || '#9CA3AF') : '#9CA3AF',
+                        borderLeftWidth: 2,
+                      }}>
                       {node.ticker}
+                      {edge && <span className="text-text-muted ml-1">({edge.weight.toFixed(2)})</span>}
                     </span>
                   );
                 })}
@@ -386,8 +398,8 @@ export default function GraphVisualization() {
           <Card>
             <h3 className="font-semibold text-sm text-secondary mb-3">Sector Legend</h3>
             <div className="space-y-1.5">
-              {Object.entries(SECTOR_COLORS).filter(([k]) => k !== 'Unknown').map(([sector, color]) => {
-                const count = stocks.filter(s => s.sector === sector).length;
+              {Object.entries(SECTOR_COLORS).filter(([k]) => !['Unknown', 'Infra'].includes(k)).map(([sector, color]) => {
+                const count = nodes.filter(n => n.sector === sector).length;
                 if (count === 0) return null;
                 return (
                   <div key={sector} className="flex items-center gap-2 text-xs">
@@ -417,9 +429,15 @@ export default function GraphVisualization() {
                 <span className="font-mono font-semibold">{visibleEdges.length}</span>
               </div>
               <div className="flex justify-between">
-                <span className="text-text-secondary">Avg Connections</span>
+                <span className="text-text-secondary">Avg Degree</span>
                 <span className="font-mono font-semibold">
-                  {nodes.length > 0 ? (visibleEdges.length * 2 / nodes.length).toFixed(1) : 0}
+                  {gnnData ? gnnData.avg_degree : 0}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-text-secondary">Density</span>
+                <span className="font-mono font-semibold">
+                  {gnnData ? gnnData.density.toFixed(4) : 0}
                 </span>
               </div>
             </div>
