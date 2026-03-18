@@ -196,6 +196,28 @@ class RLStockWeight(BaseModel):
     ppo_weight: float
     sac_weight: float
 
+class RLCumulativePoint(BaseModel):
+    day: int
+    ppo: float
+    sac: float
+    equal_weight: float
+
+class RLSectorAlloc(BaseModel):
+    sector: str
+    ppo_weight: float
+    sac_weight: float
+
+class RLWeightSnapshot(BaseModel):
+    episode: int
+    weights: dict[str, float]  # ticker -> weight
+
+class RLStockContrib(BaseModel):
+    ticker: str
+    sector: str
+    weight: float
+    return_contrib: float   # weight * return
+    cumulative_return: float
+
 class RLSummaryResponse(BaseModel):
     ppo_episodes: int
     sac_episodes: int
@@ -205,9 +227,19 @@ class RLSummaryResponse(BaseModel):
     sac_sharpe: float
     ppo_max_drawdown: float
     sac_max_drawdown: float
+    ppo_sortino: float
+    sac_sortino: float
+    ppo_annual_return: float
+    sac_annual_return: float
+    ppo_annual_vol: float
+    sac_annual_vol: float
     reward_curve: list[RLRewardPoint]
     weights: list[RLStockWeight]
     constraints: dict
+    cumulative_returns: list[RLCumulativePoint]
+    sector_allocation: list[RLSectorAlloc]
+    weight_evolution: list[RLWeightSnapshot]
+    stock_contributions: list[RLStockContrib]
 
 
 # ============================================================

@@ -26,6 +26,7 @@ from src.api.schemas import (
     PortfolioSummaryResponse, PortfolioHolding, PerformancePoint,
     StockDetailResponse, StockPricePoint,
     RLSummaryResponse, RLRewardPoint, RLStockWeight,
+    RLCumulativePoint, RLSectorAlloc, RLWeightSnapshot, RLStockContrib,
     NASLabResponse, AlphaPoint, NASCompareItem,
     FLSummaryResponse, FLRoundPoint, FLClientInfo, FLFairnessItem,
     GNNSummaryResponse, GNNNode, GNNEdge, TopConnection, SectorConnectivity,
@@ -490,7 +491,11 @@ def rl_summary():
     """
     import os
     import pandas as pd
-    from src.utils.metrics import sharpe_ratio, max_drawdown
+    from collections import defaultdict
+    from src.utils.metrics import (
+        sharpe_ratio, sortino_ratio, annualized_return,
+        annualized_volatility, max_drawdown,
+    )
     from src.data.stocks import get_sector
 
     try:
@@ -511,6 +516,10 @@ def rl_summary():
         ep_len = rl_cfg.get('episode_length', 252)
         n_episodes = min(n_days // ep_len, 80)
 
+        # Track weight evolution snapshots
+        weight_evo_snapshots = []
+        top5_tickers = []  # populated after first few episodes
+
         # Simulate PPO/SAC episode rewards from real returns
         reward_curve = []
         ppo_rewards_all = []
@@ -519,9 +528,7 @@ def rl_summary():
             start = ep * ep_len % (n_days - ep_len)
             ep_returns = daily_returns[start:start + ep_len]
 
-            # PPO: learns better weights over time (sigmoid schedule)
             progress = ep / max(n_episodes - 1, 1)
-            # PPO starts equal-weight, converges to momentum-based
             momentum_scores = np.mean(ep_returns[-60:], axis=0) if ep_returns.shape[0] >= 60 else np.mean(ep_returns, axis=0)
             ppo_w = np.ones(n_stocks) / n_stocks
             smart_w = np.exp(momentum_scores * 100)
@@ -534,7 +541,6 @@ def rl_summary():
             ppo_reward = float(sharpe_ratio(ppo_port))
             ppo_rewards_all.append(ppo_reward)
 
-            # SAC: slightly different exploration (entropy-based)
             noise = rng.normal(0, 0.01 * (1 - progress * 0.5), n_stocks)
             sac_w = ppo_w + noise
             sac_w = np.clip(sac_w, 0, 0.2)
@@ -549,8 +555,23 @@ def rl_summary():
                 sac_reward=round(sac_reward, 4),
             ))
 
-        # Final weights (last episode's PPO/SAC weights)
-        # Use validation period for final weights
+            # Snapshot weight evolution every 5 episodes for top stocks
+            if ep % 5 == 0 or ep == n_episodes - 1:
+                if not top5_tickers:
+                    top5_idx = np.argsort(ppo_w)[::-1][:8]
+                    top5_tickers = [tickers[i].replace('.NS', '') for i in top5_idx]
+                snap = {}
+                for t_short in top5_tickers:
+                    t_full = f'{t_short}.NS'
+                    if t_full in tickers:
+                        idx = tickers.index(t_full)
+                        snap[t_short] = round(float(ppo_w[idx]) * 100, 2)
+                weight_evo_snapshots.append(RLWeightSnapshot(
+                    episode=ep + 1,
+                    weights=snap,
+                ))
+
+        # Final weights on validation period
         val_df = df[(df.index > '2021-12-31') & (df.index <= '2023-12-31')]
         val_returns = val_df.pct_change().dropna().values
         momentum = np.mean(val_returns[-60:], axis=0) if val_returns.shape[0] >= 60 else np.mean(val_returns, axis=0)
@@ -576,8 +597,57 @@ def rl_summary():
         # Metrics from final weights on validation data
         ppo_val_port = val_returns @ final_ppo_w
         sac_val_port = val_returns @ final_sac_w
+        eq_w = np.ones(n_stocks) / n_stocks
+        eq_val_port = val_returns @ eq_w
         ppo_val_values = 100 * np.cumprod(1 + ppo_val_port)
         sac_val_values = 100 * np.cumprod(1 + sac_val_port)
+        eq_val_values = 100 * np.cumprod(1 + eq_val_port)
+
+        # Cumulative returns comparison (sample every 5 days)
+        cum_returns = []
+        ppo_cum = np.cumprod(1 + ppo_val_port) - 1
+        sac_cum = np.cumprod(1 + sac_val_port) - 1
+        eq_cum = np.cumprod(1 + eq_val_port) - 1
+        for d in range(0, len(ppo_cum), 5):
+            cum_returns.append(RLCumulativePoint(
+                day=d,
+                ppo=round(float(ppo_cum[d]) * 100, 2),
+                sac=round(float(sac_cum[d]) * 100, 2),
+                equal_weight=round(float(eq_cum[d]) * 100, 2),
+            ))
+        # Always include last point
+        cum_returns.append(RLCumulativePoint(
+            day=len(ppo_cum) - 1,
+            ppo=round(float(ppo_cum[-1]) * 100, 2),
+            sac=round(float(sac_cum[-1]) * 100, 2),
+            equal_weight=round(float(eq_cum[-1]) * 100, 2),
+        ))
+
+        # Sector allocation
+        sector_ppo: dict[str, float] = defaultdict(float)
+        sector_sac: dict[str, float] = defaultdict(float)
+        for i, t in enumerate(tickers):
+            sector = get_sector(t) or 'Unknown'
+            sector_ppo[sector] += final_ppo_w[i] * 100
+            sector_sac[sector] += final_sac_w[i] * 100
+        sector_alloc = [
+            RLSectorAlloc(sector=s, ppo_weight=round(sector_ppo[s], 2), sac_weight=round(sector_sac[s], 2))
+            for s in sorted(sector_ppo.keys(), key=lambda s: sector_ppo[s], reverse=True)
+        ]
+
+        # Per-stock return contribution (weight × cumulative return)
+        val_cum_returns = (val_df.iloc[-1] / val_df.iloc[0] - 1).values
+        stock_contribs = []
+        for i in top_idx:
+            ppo_contrib = float(final_ppo_w[i] * val_cum_returns[i]) * 100
+            stock_contribs.append(RLStockContrib(
+                ticker=tickers[i].replace('.NS', ''),
+                sector=get_sector(tickers[i]) or 'Unknown',
+                weight=round(float(final_ppo_w[i]) * 100, 2),
+                return_contrib=round(ppo_contrib, 4),
+                cumulative_return=round(float(val_cum_returns[i]) * 100, 2),
+            ))
+        stock_contribs.sort(key=lambda x: x.return_contrib, reverse=True)
 
         return RLSummaryResponse(
             ppo_episodes=n_episodes,
@@ -588,6 +658,12 @@ def rl_summary():
             sac_sharpe=round(float(sharpe_ratio(sac_val_port)), 4),
             ppo_max_drawdown=round(float(max_drawdown(ppo_val_values)), 4),
             sac_max_drawdown=round(float(max_drawdown(sac_val_values)), 4),
+            ppo_sortino=round(float(sortino_ratio(ppo_val_port)), 4),
+            sac_sortino=round(float(sortino_ratio(sac_val_port)), 4),
+            ppo_annual_return=round(float(annualized_return(ppo_val_port)) * 100, 2),
+            sac_annual_return=round(float(annualized_return(sac_val_port)) * 100, 2),
+            ppo_annual_vol=round(float(annualized_volatility(ppo_val_port)) * 100, 2),
+            sac_annual_vol=round(float(annualized_volatility(sac_val_port)) * 100, 2),
             reward_curve=reward_curve,
             weights=weights,
             constraints={
@@ -597,6 +673,10 @@ def rl_summary():
                 'transaction_cost': cfg.get('data', {}).get('transaction_cost', 0.001),
                 'slippage': cfg.get('data', {}).get('slippage', 0.0005),
             },
+            cumulative_returns=cum_returns,
+            sector_allocation=sector_alloc,
+            weight_evolution=weight_evo_snapshots,
+            stock_contributions=stock_contribs,
         )
     except Exception as e:
         logger.error(f'RL summary error: {traceback.format_exc()}')
