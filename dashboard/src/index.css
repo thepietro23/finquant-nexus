@@ -33,6 +33,22 @@
   --font-mono: 'JetBrains Mono', 'Fira Code', ui-monospace, monospace;
 }
 
+/* ── Dark Mode Overrides ── */
+[data-theme="dark"] {
+  --color-bg: #0F0F14;
+  --color-bg-cream: #1A1A2E;
+  --color-bg-card: #16162A;
+  --color-text: #F3F4F6;
+  --color-text-secondary: #9CA3AF;
+  --color-text-muted: #6B7280;
+  --color-border: #2D2D44;
+  --color-border-light: #252538;
+  --color-primary-subtle: #2A1A10;
+  --color-primary-light: #3D1F0F;
+  --color-profit-light: #052E16;
+  --color-loss-light: #2D0A0A;
+}
+
 body {
   font-family: var(--font-sans);
   background: var(--color-bg);
@@ -40,6 +56,35 @@ body {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   margin: 0;
+  transition: background-color 0.3s ease, color 0.3s ease;
+}
+
+/* Skeleton shimmer animation */
+@keyframes shimmer {
+  0% { background-position: -200% center; }
+  100% { background-position: 200% center; }
+}
+
+.skeleton-shimmer {
+  background: linear-gradient(
+    90deg,
+    var(--color-bg-card) 25%,
+    var(--color-border) 50%,
+    var(--color-bg-card) 75%
+  );
+  background-size: 200% auto;
+  animation: shimmer 1.5s linear infinite;
+}
+
+/* Toast slide-in */
+@keyframes toast-in {
+  from { opacity: 0; transform: translateY(16px) scale(0.96); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes toast-out {
+  from { opacity: 1; transform: translateY(0) scale(1); }
+  to   { opacity: 0; transform: translateY(8px) scale(0.96); }
 }
 
 ::-webkit-scrollbar { width: 6px; }

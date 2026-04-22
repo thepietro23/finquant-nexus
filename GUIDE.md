@@ -1,7 +1,7 @@
 # FINQUANT-NEXUS v4 — Complete Running Guide
 
 > Step-by-step guide to run backend, frontend, and tests.
-> Last updated: 2026-04-22 (post-restructure: 6 tabs, FinRL integration, real-time Sentiment)
+> Last updated: 2026-04-21 (FinRL 0.3.7 fully installed — _FINRL_AVAILABLE=True, create_finrl_agent + run_finrl_baseline added)
 
 ---
 
@@ -29,7 +29,7 @@ python -m venv venv
 # Install PyTorch (CUDA 12.1)
 pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
 
-# Install all other dependencies (includes finrl>=3.0)
+# Install all other dependencies (includes finrl, alpaca-trade-api, exchange-calendars, stockstats)
 pip install -r requirements.txt
 ```
 
@@ -38,6 +38,7 @@ pip install -r requirements.txt
 python -c "import torch; print(f'PyTorch: {torch.__version__}, CUDA: {torch.cuda.is_available()}')"
 python -c "import fastapi; print(f'FastAPI OK')"
 python -c "import stable_baselines3; print(f'SB3 OK')"
+python -c "from finrl.agents.stablebaselines3.models import DRLAgent; print('FinRL OK')"
 ```
 
 ---
@@ -195,7 +196,7 @@ python -m pytest tests/ -v
 | `ModuleNotFoundError: No module named 'src'` | `cd fqn1` karo pehle |
 | `Address already in use :8001` | `npx kill-port 8001` |
 | `CUDA out of memory` | `configs/base.yaml` mein `device: cpu` karo |
-| `finrl import error` | Gymnasium conflict — SB3 fallback automatic hai, ignore |
+| `finrl import error` | Run: `pip install alpaca-trade-api exchange-calendars stockstats "websockets>=13"` |
 | `SSL/proxy error (yfinance)` | Mobile hotspot try karo |
 
 ### Frontend Issues

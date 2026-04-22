@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
-import { Users, Shield, Lock, Activity, Loader2, AlertTriangle } from 'lucide-react';
+import { Users, Shield, Lock, Activity, AlertTriangle } from 'lucide-react';
+import { MetricCardSkeleton, Skeleton } from '../components/ui/Skeleton';
 import {
   ResponsiveContainer, LineChart, Line, XAxis, YAxis,
   CartesianGrid, Tooltip, Legend, BarChart, Bar,
@@ -66,9 +67,15 @@ export default function Federated() {
 
   if (loading) {
     return (
-      <div className="flex flex-col items-center justify-center h-96 gap-4">
-        <Loader2 size={32} className="animate-spin text-primary" />
-        <p className="text-text-secondary text-sm">Loading federated learning results from real sector data...</p>
+      <div className="space-y-6">
+        <Skeleton className="h-8 w-56 mb-2" rounded="lg" />
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          {Array.from({ length: 4 }).map((_, i) => <MetricCardSkeleton key={i} />)}
+        </div>
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          <Skeleton className="h-64" rounded="xl" />
+          <Skeleton className="h-64" rounded="xl" />
+        </div>
       </div>
     );
   }
@@ -83,14 +90,15 @@ export default function Federated() {
     );
   }
 
+  const clients = data.clients ?? []
   const convData = data.convergence.map(r => ({
     round: r.round,
     FedProx: r.fedprox_loss,
     FedAvg: r.fedavg_loss,
-    [data.clients[0].name]: r.client_0_loss,
-    [data.clients[1].name]: r.client_1_loss,
-    [data.clients[2].name]: r.client_2_loss,
-    [data.clients[3].name]: r.client_3_loss,
+    ...(clients[0] ? { [clients[0].name]: r.client_0_loss } : {}),
+    ...(clients[1] ? { [clients[1].name]: r.client_1_loss } : {}),
+    ...(clients[2] ? { [clients[2].name]: r.client_2_loss } : {}),
+    ...(clients[3] ? { [clients[3].name]: r.client_3_loss } : {}),
   }));
 
   const fairnessData = data.fairness.map(f => ({
@@ -154,7 +162,7 @@ export default function Federated() {
             <Legend iconType="circle" iconSize={8} wrapperStyle={{ fontSize: 11 }} />
             <Line type="monotone" dataKey="FedProx" stroke="#C15F3C" strokeWidth={3} dot={false} />
             <Line type="monotone" dataKey="FedAvg" stroke="#6366F1" strokeWidth={2.5} strokeDasharray="5 5" dot={false} />
-            {data.clients.map((c, i) => (
+            {clients.map((c, i) => (
               <Line key={c.name} type="monotone" dataKey={c.name} stroke={CLIENT_COLORS[i]}
                 strokeWidth={1} strokeOpacity={0.5} dot={false} />
             ))}
@@ -183,7 +191,7 @@ export default function Federated() {
       </Card>
 
       <p className="text-center text-xs text-text-muted mt-6 mb-2">
-        Real sector-split data — {data.clients.map(c => `${c.name}: ${c.n_stocks}`).join(' | ')} — Privacy: ε={data.privacy_epsilon}, δ={data.privacy_delta}
+        Real sector-split data — {clients.map(c => `${c.name}: ${c.n_stocks}`).join(' | ')} — Privacy: ε={data.privacy_epsilon}, δ={data.privacy_delta}
       </p>
     </div>
   );

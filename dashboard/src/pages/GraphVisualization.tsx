@@ -13,7 +13,9 @@
  */
 import { useEffect, useState, useMemo, useRef } from 'react';
 import { GitGraph } from 'lucide-react';
+import { Skeleton } from '../components/ui/Skeleton';
 import { api } from '../lib/api';
+import { toast } from '../lib/toast';
 import type { GNNSummaryResponse } from '../lib/api';
 import Card from '../components/ui/Card';
 import PageHeader from '../components/ui/PageHeader';
@@ -154,18 +156,23 @@ export default function GraphVisualization() {
     const sectorAngle: Record<string, number> = {};
     sectorList.forEach((s, i) => { sectorAngle[s] = (i / sectorList.length) * Math.PI * 2; });
 
-    // Seed a simple LCG for deterministic "jitter" without Math.random
-    let seed = 42;
-    const nextRand = () => { seed = (seed * 1664525 + 1013904223) & 0x7fffffff; return seed / 0x7fffffff; };
+    // Per-node hash: each ticker gets its own deterministic jitter,
+    // independent of insertion order — no position shifts when nodes added/removed
+    const nodeHash = (s: string) => {
+      let h = 5381;
+      for (let i = 0; i < s.length; i++) h = ((h << 5) + h) ^ s.charCodeAt(i);
+      return Math.abs(h);
+    };
+    const nodeRand = (ticker: string, salt: number) => (nodeHash(ticker + salt) % 10000) / 10000;
 
     const sectorCounters: Record<string, number> = {};
     const newNodes: GraphNode[] = gnnData.nodes.map(n => {
       if (!sectorCounters[n.sector]) sectorCounters[n.sector] = 0;
       const idx = sectorCounters[n.sector]++;
       const baseAngle = sectorAngle[n.sector] || 0;
-      const spread = 0.4; // radians spread within sector
-      const angle = baseAngle + (idx - 2) * spread * 0.3 + (nextRand() - 0.5) * 0.3;
-      const r = 150 + nextRand() * 100;
+      const spread = 0.4;
+      const angle = baseAngle + (idx - 2) * spread * 0.3 + (nodeRand(n.ticker, 0) - 0.5) * 0.3;
+      const r = 150 + nodeRand(n.ticker, 1) * 100;
       return {
         id: n.ticker,
         ticker: n.ticker,
@@ -235,8 +242,12 @@ export default function GraphVisualization() {
   };
 
   if (loading) return (
-    <div className="flex items-center justify-center h-64">
-      <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary" />
+    <div className="space-y-4">
+      <Skeleton className="h-8 w-48" rounded="lg" />
+      <Skeleton className="h-[480px] w-full" rounded="xl" />
+      <div className="grid grid-cols-3 gap-4">
+        {Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-24" rounded="xl" />)}
+      </div>
     </div>
   );
 
@@ -256,7 +267,13 @@ export default function GraphVisualization() {
         <span className="text-sm font-medium text-text-secondary">Show edges:</span>
         {(['sector', 'supply', 'correlation'] as const).map(type => (
           <button key={type}
-            onClick={() => setShowEdgeType(p => ({ ...p, [type]: !p[type] }))}
+            onClick={() => {
+              setShowEdgeType(p => {
+                const next = { ...p, [type]: !p[type] };
+                toast.info(`${type} edges ${next[type] ? 'shown' : 'hidden'}`);
+                return next;
+              });
+            }}
             className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium transition-all border ${
               showEdgeType[type]
                 ? 'border-current opacity-100'

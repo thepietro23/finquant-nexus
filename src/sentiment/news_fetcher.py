@@ -84,12 +84,18 @@ def fetch_google_news(query, max_results=20):
     Returns:
         List of dicts: [{title, published, link}, ...]
     """
+    import socket
     encoded = quote(query)
     url = f'https://news.google.com/rss/search?q={encoded}&hl=en-IN&gl=IN&ceid=IN:en'
 
     try:
-        feed = feedparser.parse(url, request_headers={'User-Agent': 'Mozilla/5.0'},
-                                agent='Mozilla/5.0', timeout=10)
+        # feedparser.parse() has no timeout param — use socket-level timeout
+        old_timeout = socket.getdefaulttimeout()
+        socket.setdefaulttimeout(10)
+        try:
+            feed = feedparser.parse(url, request_headers={'User-Agent': 'Mozilla/5.0'})
+        finally:
+            socket.setdefaulttimeout(old_timeout)
         results = []
         for entry in feed.entries[:max_results]:
             published = None

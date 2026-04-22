@@ -1,6 +1,7 @@
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import { motion } from 'framer-motion';
 import { AlertTriangle, Play, Shield, TrendingDown } from 'lucide-react';
+import { toast } from '../lib/toast';
 import {
   ResponsiveContainer, XAxis, YAxis,
   CartesianGrid, LineChart, Line,
@@ -72,26 +73,30 @@ export default function StressTesting() {
   const [nSim, setNSim] = useState(1000);
   const [mcPaths] = useState(() => genMonteCarloPaths());
 
-  // Build chart data from first 30 paths for display
-  const mcChartData = mcPaths[0].map((_, i) => {
+  // Build chart data from first 30 paths — memoized since mcPaths never changes
+  const mcChartData = useMemo(() => mcPaths[0].map((_, i) => {
     const point: Record<string, number> = { day: i };
     mcPaths.slice(0, 30).forEach((path, p) => {
       point[`p${p}`] = path[i].value;
     });
     return point;
-  });
+  }), [mcPaths]);
 
   async function runTest() {
     setLoading(true);
     setError(null);
+    toast.info(`Running ${nSim.toLocaleString()} Monte Carlo simulations on ${nStocks} stocks…`);
     try {
       const res = await api.stressTest(
         Math.max(2, Math.min(47, nStocks)),
         Math.max(100, Math.min(50000, nSim)),
       );
       setScenarios(res.scenarios);
+      toast.success(`Stress test complete — ${res.scenarios.length} scenarios analyzed`);
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Stress test failed — is the backend running?');
+      const msg = e instanceof Error ? e.message : 'Stress test failed — is the backend running?';
+      setError(msg);
+      toast.error(msg);
     } finally {
       setLoading(false);
     }

@@ -463,3 +463,34 @@ class GNNSummaryResponse(BaseModel):
     top_connections: list[TopConnection]
     sector_connectivity: list[SectorConnectivity]
     degree_distribution: dict[int, int]   # degree -> count
+
+
+# ============================================================
+# PORTFOLIO GROWTH (time-based investment simulator)
+# ============================================================
+
+class GrowthPoint(BaseModel):
+    date: str
+    portfolio_value: float   # ₹ value of equal-weight NIFTY 50 portfolio
+    nifty_value: float       # ₹ value of NIFTY 50 index
+    fd_value: float          # ₹ value of 7% annual FD
+
+class GrowthRequest(BaseModel):
+    amount: float = Field(..., gt=0, description="Initial investment in ₹")
+    start_date: str = Field(..., description="Start date YYYY-MM-DD")
+
+class GrowthResponse(BaseModel):
+    amount: float
+    start_date: str
+    end_date: str
+    n_days: int
+    final_portfolio: float
+    final_nifty: float
+    final_fd: float
+    portfolio_return_pct: float
+    nifty_return_pct: float
+    fd_return_pct: float
+    portfolio_profit: float
+    nifty_profit: float
+    fd_profit: float
+    series: list[GrowthPoint]

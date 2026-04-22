@@ -3,9 +3,10 @@ import { motion, AnimatePresence } from 'framer-motion';
 import {
   MessageSquare, Send, TrendingUp, TrendingDown, Minus,
   Newspaper, PieChart, ArrowUpRight, ArrowDownRight, RefreshCw,
-  BarChart3, Briefcase,
+  BarChart3, Briefcase, ChevronDown, ChevronUp, Zap, Activity,
 } from 'lucide-react';
 import { api } from '../lib/api';
+import { toast } from '../lib/toast';
 import type {
   SentimentResponse, NewsSentimentResponse, NewsItem,
 } from '../lib/api';
@@ -90,42 +91,153 @@ function ScoreBar({ score }: { score: number }) {
   );
 }
 
-function NewsCard({ item, index }: { item: NewsItem; index: number }) {
+// Color helpers
+const LABEL_COLOR = { positive: '#16A34A', negative: '#DC2626', neutral: '#9CA3AF' }
+const LABEL_BG = { positive: '#DCFCE7', negative: '#FEE2E2', neutral: '#F3F4F6' }
+
+function SentimentBar({ positive, negative, neutral }: { positive: number; negative: number; neutral: number }) {
+  return (
+    <div className="w-full">
+      <div className="flex rounded-full overflow-hidden h-2.5">
+        <div style={{ width: `${positive * 100}%`, background: '#16A34A' }} />
+        <div style={{ width: `${neutral * 100}%`, background: '#D1D5DB' }} />
+        <div style={{ width: `${negative * 100}%`, background: '#DC2626' }} />
+      </div>
+      <div className="flex justify-between mt-1.5 text-[10px] font-medium">
+        <span className="text-[#16A34A]">▲ Positive {(positive * 100).toFixed(0)}%</span>
+        <span className="text-gray-400">Neutral {(neutral * 100).toFixed(0)}%</span>
+        <span className="text-[#DC2626]">▼ Negative {(negative * 100).toFixed(0)}%</span>
+      </div>
+    </div>
+  )
+}
+
+function NewsCard({ item, index, isNew }: { item: NewsItem; index: number; isNew?: boolean }) {
+  const [expanded, setExpanded] = useState(false)
+  const label = item.label as 'positive' | 'negative' | 'neutral'
+  const scoreAbs = Math.abs(item.score)
+  const confidence = scoreAbs > 0.5 ? 'High' : scoreAbs > 0.25 ? 'Medium' : 'Low'
+  const confColor = scoreAbs > 0.5 ? '#16A34A' : scoreAbs > 0.25 ? '#F59E0B' : '#9CA3AF'
+
   return (
     <motion.div
-      initial={{ opacity: 0, x: -20 }}
-      animate={{ opacity: 1, x: 0 }}
-      transition={{ delay: index * 0.04, duration: 0.3 }}
-      className="group p-3 rounded-xl bg-white border border-border-light hover:border-primary/30
-        hover:shadow-[0_4px_16px_rgba(193,95,60,0.08)] transition-all duration-300"
+      initial={{ opacity: 0, y: isNew ? -12 : 0, scale: isNew ? 0.98 : 1 }}
+      animate={{ opacity: 1, y: 0, scale: 1 }}
+      transition={{ delay: isNew ? 0 : index * 0.03, duration: 0.28 }}
+      className={`rounded-xl border transition-all duration-200 overflow-hidden ${
+        expanded ? 'border-primary/40 shadow-md shadow-primary/8' : 'border-border-light hover:border-border'
+      } ${isNew ? 'ring-1 ring-blue-300' : ''}`}
+      style={{ background: expanded ? (LABEL_BG[label] + '55') : '#fff' }}
     >
-      <div className="flex items-start gap-3">
-        <div className={`mt-0.5 shrink-0 w-8 h-8 rounded-lg flex items-center justify-center text-white text-xs font-bold
-          ${item.label === 'positive' ? 'bg-profit' : item.label === 'negative' ? 'bg-loss' : 'bg-gray-400'}`}>
-          {item.score > 0 ? '+' : ''}{(item.score * 100).toFixed(0)}
+      {/* Main row — always visible */}
+      <div
+        className="flex items-start gap-3 p-3 cursor-pointer"
+        onClick={() => setExpanded(e => !e)}
+      >
+        {/* Score badge */}
+        <div
+          className="shrink-0 w-10 h-10 rounded-xl flex flex-col items-center justify-center text-white text-[10px] font-bold gap-0"
+          style={{ background: LABEL_COLOR[label] }}
+        >
+          <span className="text-base font-black leading-none">
+            {item.score > 0.05 ? '▲' : item.score < -0.05 ? '▼' : '—'}
+          </span>
+          <span className="text-[9px] leading-none opacity-90">
+            {item.score > 0 ? '+' : ''}{(item.score * 100).toFixed(0)}
+          </span>
         </div>
+
+        {/* Headline + meta */}
         <div className="flex-1 min-w-0">
-          <p className="text-sm text-text leading-snug line-clamp-2 group-hover:text-primary transition-colors">
+          <p className="text-sm text-text leading-snug font-medium" style={{ display: '-webkit-box', WebkitLineClamp: expanded ? undefined : 2, WebkitBoxOrient: 'vertical', overflow: expanded ? 'visible' : 'hidden' }}>
             {item.headline}
           </p>
-          <div className="flex items-center gap-2 mt-1.5">
-            {item.ticker !== 'MARKET' && (
-              <span className="text-[10px] font-mono font-medium px-1.5 py-0.5 rounded bg-bg-card border border-border-light"
-                style={{ borderLeftColor: SECTOR_COLORS[item.sector] || '#9CA3AF', borderLeftWidth: 2 }}>
+          <div className="flex flex-wrap items-center gap-2 mt-1.5">
+            {item.ticker && item.ticker !== 'MARKET' && (
+              <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded border"
+                style={{ color: SECTOR_COLORS[item.sector] || '#6B7280', borderColor: SECTOR_COLORS[item.sector] + '50' || '#E5E7EB', background: SECTOR_COLORS[item.sector] + '12' || '#F9FAFB' }}>
                 {item.ticker}
               </span>
             )}
-            <span className="text-[10px] text-text-muted">{item.published}</span>
-            {item.source && <span className="text-[10px] text-text-muted truncate max-w-[120px]">{item.source}</span>}
+            {item.sector && (
+              <span className="text-[10px] text-text-muted">{item.sector}</span>
+            )}
+            {item.published && (
+              <span className="text-[10px] text-text-muted">{item.published}</span>
+            )}
+            {isNew && (
+              <span className="text-[9px] font-bold text-blue-600 bg-blue-50 px-1.5 py-0.5 rounded-full border border-blue-200">NEW</span>
+            )}
           </div>
         </div>
-        <Badge variant={item.label === 'positive' ? 'profit' : item.label === 'negative' ? 'loss' : 'neutral'}>
-          {item.label === 'positive' ? <TrendingUp size={10} /> : item.label === 'negative' ? <TrendingDown size={10} /> : <Minus size={10} />}
-          <span className="ml-1">{item.label}</span>
-        </Badge>
+
+        {/* Right: confidence + expand */}
+        <div className="shrink-0 flex flex-col items-end gap-1.5">
+          <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full border"
+            style={{ color: confColor, borderColor: confColor + '40', background: confColor + '12' }}>
+            {confidence} conf.
+          </span>
+          <button className="text-text-muted hover:text-primary transition-colors">
+            {expanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+          </button>
+        </div>
       </div>
+
+      {/* Expanded: Full FinBERT breakdown — inline, no redirect */}
+      <AnimatePresence>
+        {expanded && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.22 }}
+            className="overflow-hidden"
+          >
+            <div className="px-3 pb-3 pt-1 space-y-3 border-t border-border-light">
+              {/* FinBERT label */}
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-semibold uppercase tracking-wide" style={{ color: LABEL_COLOR[label] }}>
+                  FinBERT verdict: {label}
+                </span>
+                <Zap size={12} style={{ color: LABEL_COLOR[label] }} />
+                <span className="text-xs text-text-muted ml-1">score = P(positive) − P(negative)</span>
+              </div>
+
+              {/* Stacked probability bar */}
+              <SentimentBar positive={item.positive} negative={item.negative} neutral={item.neutral} />
+
+              {/* Three numbers */}
+              <div className="grid grid-cols-3 gap-2">
+                {[
+                  { label: 'Positive', val: item.positive, color: '#16A34A' },
+                  { label: 'Neutral',  val: item.neutral,  color: '#9CA3AF' },
+                  { label: 'Negative', val: item.negative, color: '#DC2626' },
+                ].map(b => (
+                  <div key={b.label} className="rounded-lg p-2.5 text-center" style={{ background: b.color + '10', border: `1px solid ${b.color}30` }}>
+                    <p className="text-[10px] font-medium mb-0.5" style={{ color: b.color }}>{b.label}</p>
+                    <p className="font-mono font-bold text-sm" style={{ color: b.color }}>{(b.val * 100).toFixed(1)}%</p>
+                  </div>
+                ))}
+              </div>
+
+              {/* Net score */}
+              <div className="flex items-center justify-between bg-bg-card rounded-lg px-3 py-2">
+                <span className="text-xs text-text-muted">Net Sentiment Score</span>
+                <span className="font-mono font-bold text-sm" style={{ color: LABEL_COLOR[label] }}>
+                  {item.score > 0 ? '+' : ''}{item.score.toFixed(4)}
+                </span>
+              </div>
+
+              {/* Source */}
+              {item.source && (
+                <p className="text-[10px] text-text-muted italic">Source: {item.source}</p>
+              )}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </motion.div>
-  );
+  )
 }
 
 const REFRESH_INTERVAL = 180_000 // 3 minutes
@@ -138,10 +250,14 @@ function useTimeAgo(date: Date | null): string {
   const [label, setLabel] = useState('—')
   useEffect(() => {
     if (!date) return
-    const id = setInterval(() => {
+    const update = () => {
       const secs = Math.floor((Date.now() - date.getTime()) / 1000)
-      setLabel(secs < 60 ? `${secs}s ago` : `${Math.floor(secs / 60)}m ago`)
-    }, 1000)
+      const next = secs < 60 ? `${secs}s ago` : `${Math.floor(secs / 60)}m ago`
+      setLabel(prev => prev === next ? prev : next)
+    }
+    update()
+    // 10s is fine — display only changes at minute boundaries
+    const id = setInterval(update, 10_000)
     return () => clearInterval(id)
   }, [date])
   return label
@@ -164,7 +280,9 @@ export default function Sentiment() {
   // Real-time state
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [newCount, setNewCount] = useState(0);
+  const [newHeadlines, setNewHeadlines] = useState<Set<string>>(new Set());
   const prevHeadlinesRef = useRef<Set<string>>(new Set());
+  const loadingRef = useRef(false);
   const [history, setHistory] = useState<TrendPoint[]>(() => {
     try { return JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]') }
     catch { return [] }
@@ -173,6 +291,8 @@ export default function Sentiment() {
   const timeAgo = useTimeAgo(lastUpdated);
 
   function loadNewsSentiment() {
+    if (loadingRef.current) return;  // prevent overlapping calls
+    loadingRef.current = true;
     setNewsLoading(true);
     setNewsError(null);
     api.newsSentiment()
@@ -180,7 +300,12 @@ export default function Sentiment() {
         // Track new headlines
         const incoming = new Set(d.news.map(n => n.headline))
         const brandNew = [...incoming].filter(h => !prevHeadlinesRef.current.has(h))
-        if (prevHeadlinesRef.current.size > 0) setNewCount(brandNew.length)
+        if (prevHeadlinesRef.current.size > 0) {
+          setNewCount(brandNew.length)
+          setNewHeadlines(new Set(brandNew))
+          // Clear new badges after 8s
+          setTimeout(() => setNewHeadlines(new Set()), 8000)
+        }
         prevHeadlinesRef.current = incoming
 
         // Update trend history in localStorage
@@ -191,17 +316,19 @@ export default function Sentiment() {
         }
         setHistory(prev => {
           const next = [...prev.slice(-(MAX_HISTORY - 1)), point]
-          localStorage.setItem(HISTORY_KEY, JSON.stringify(next))
+          try { localStorage.setItem(HISTORY_KEY, JSON.stringify(next)) } catch { /* quota exceeded */ }
           return next
         })
 
         setNewsData(d);
         setLastUpdated(new Date());
-        setNewsLoading(false);
       })
       .catch(e => {
         setNewsError(e instanceof Error ? e.message : 'Failed to fetch news sentiment');
+      })
+      .finally(() => {
         setNewsLoading(false);
+        loadingRef.current = false;
       });
   }
 
@@ -219,8 +346,13 @@ export default function Sentiment() {
     try {
       const res = await api.sentiment(text);
       setResult(res);
+      const label = res.label ?? 'neutral';
+      const icon = label === 'positive' ? '📈' : label === 'negative' ? '📉' : '➖';
+      toast.info(`${icon} FinBERT: ${label} (score ${res.score?.toFixed(3) ?? '—'})`);
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Sentiment analysis failed — is the backend running?');
+      const msg = e instanceof Error ? e.message : 'Sentiment analysis failed — is the backend running?';
+      setError(msg);
+      toast.error(msg);
     } finally {
       setAnalyzing(false);
     }
@@ -433,10 +565,18 @@ export default function Sentiment() {
         {newsError && <p className="text-sm text-loss mb-3">{newsError}</p>}
 
         {newsLoading && !newsData && (
-          <div className="flex flex-col items-center justify-center py-16">
-            <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-primary mb-4" />
-            <p className="text-sm text-text-secondary">Fetching live news & running FinBERT analysis...</p>
-            <p className="text-xs text-text-muted mt-1">This may take 15-30 seconds (fetching 20+ stocks from Google News)</p>
+          <div className="space-y-3 py-4">
+            {Array.from({ length: 6 }).map((_, i) => (
+              <div key={i} className="flex gap-3 p-3 rounded-xl border border-border-light">
+                <div className="skeleton-shimmer rounded-full w-8 h-8 shrink-0" />
+                <div className="flex-1 space-y-2">
+                  <div className="skeleton-shimmer rounded h-4 w-3/4" />
+                  <div className="skeleton-shimmer rounded h-3 w-1/2" />
+                </div>
+                <div className="skeleton-shimmer rounded-full w-16 h-6 shrink-0" />
+              </div>
+            ))}
+            <p className="text-xs text-text-muted text-center pt-2">Running FinBERT on live news... (15–30s)</p>
           </div>
         )}
 
@@ -444,11 +584,43 @@ export default function Sentiment() {
           <AnimatePresence mode="wait">
             {/* NEWS TAB */}
             {activeTab === 'news' && (
-              <motion.div key="news" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}
-                className="space-y-2 max-h-[520px] overflow-y-auto pr-1">
-                {newsData.news.map((item, i) => (
-                  <NewsCard key={i} item={item} index={i} />
-                ))}
+              <motion.div key="news" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}>
+
+                {/* Live ticker strip */}
+                {newsData.news.length > 0 && (
+                  <div className="mb-3 overflow-hidden rounded-lg bg-bg-card border border-border-light py-2 px-3">
+                    <div className="flex items-center gap-2 mb-1">
+                      <Activity size={11} className="text-primary shrink-0" />
+                      <span className="text-[10px] font-bold text-primary uppercase tracking-wider">Live Feed</span>
+                      <span className="text-[10px] text-text-muted">— Click any card to see full FinBERT analysis</span>
+                    </div>
+                    <div className="flex gap-3 overflow-x-auto pb-1 scrollbar-hide">
+                      {newsData.news.slice(0, 8).map((n, i) => (
+                        <div key={i} className="shrink-0 flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-medium border"
+                          style={{
+                            background: n.label === 'positive' ? '#DCFCE7' : n.label === 'negative' ? '#FEE2E2' : '#F3F4F6',
+                            borderColor: n.label === 'positive' ? '#16A34A40' : n.label === 'negative' ? '#DC262640' : '#D1D5DB',
+                            color: n.label === 'positive' ? '#16A34A' : n.label === 'negative' ? '#DC2626' : '#6B7280',
+                          }}>
+                          {n.ticker && n.ticker !== 'MARKET' && <span className="font-mono font-bold">{n.ticker}</span>}
+                          <span>{n.score > 0 ? '+' : ''}{(n.score * 100).toFixed(0)}</span>
+                          {n.label === 'positive' ? <TrendingUp size={10} /> : n.label === 'negative' ? <TrendingDown size={10} /> : <Minus size={10} />}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                <div className="space-y-2 max-h-[540px] overflow-y-auto pr-1">
+                  {newsData.news.map((item, i) => (
+                    <NewsCard
+                      key={item.headline}
+                      item={item}
+                      index={i}
+                      isNew={newHeadlines.has(item.headline)}
+                    />
+                  ))}
+                </div>
               </motion.div>
             )}
 

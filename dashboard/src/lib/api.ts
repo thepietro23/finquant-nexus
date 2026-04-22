@@ -266,4 +266,21 @@ export const api = {
 
   newsSentiment: () =>
     fetchJSON<NewsSentimentResponse>('/news-sentiment'),
+
+  portfolioGrowth: (amount: number, start_date: string) =>
+    fetchJSON<GrowthResponse>('/portfolio-growth', {
+      method: 'POST', body: JSON.stringify({ amount, start_date }),
+    }),
 };
+
+// --- Portfolio Growth types ---
+export interface GrowthPoint {
+  date: string; portfolio_value: number; nifty_value: number; fd_value: number;
+}
+export interface GrowthResponse {
+  amount: number; start_date: string; end_date: string; n_days: number;
+  final_portfolio: number; final_nifty: number; final_fd: number;
+  portfolio_return_pct: number; nifty_return_pct: number; fd_return_pct: number;
+  portfolio_profit: number; nifty_profit: number; fd_profit: number;
+  series: GrowthPoint[];
+}

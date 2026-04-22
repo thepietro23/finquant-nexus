@@ -1,19 +1,64 @@
 import { useEffect, useState } from 'react';
-import { PieChart, Loader2, AlertTriangle, TrendingUp, TrendingDown, X } from 'lucide-react';
+import { PieChart, AlertTriangle, TrendingUp, TrendingDown, X, Calculator, IndianRupee, ChevronDown, ChevronUp } from 'lucide-react';
+import { MetricCardSkeleton, TableRowSkeleton, Skeleton } from '../components/ui/Skeleton';
+import { toast } from '../lib/toast';
 import {
   ResponsiveContainer, BarChart, Bar, XAxis, YAxis,
   CartesianGrid, Tooltip, Cell, AreaChart, Area,
+  LineChart, Line, Legend, ReferenceLine, LabelList,
 } from 'recharts';
 import { motion, AnimatePresence } from 'framer-motion';
 import { api } from '../lib/api';
-import type { PortfolioSummaryResponse, StockDetailResponse } from '../lib/api';
+import type { PortfolioSummaryResponse, StockDetailResponse, GrowthResponse } from '../lib/api';
 import Card from '../components/ui/Card';
 import PageHeader from '../components/ui/PageHeader';
 import MetricCard from '../components/ui/MetricCard';
+import type { MetricBadge } from '../components/ui/MetricCard';
 import PageInfoPanel from '../components/ui/PageInfoPanel';
 import MetricInfoPanel from '../components/ui/MetricInfoPanel';
 import type { MetricDetail } from '../components/ui/MetricInfoPanel';
 import { staggerContainer } from '../lib/animations';
+
+// ── Semantic badge thresholds ──
+function getMetricBadge(metric: string, value: number): MetricBadge {
+  switch (metric) {
+    case 'sharpe': {
+      if (value >= 1.5) return { label: 'EXCEPTIONAL', variant: 'profit' };
+      if (value >= 1.0) return { label: 'EXCELLENT', variant: 'profit' };
+      if (value >= 0.5) return { label: 'GOOD', variant: 'profit' };
+      if (value >= 0)   return { label: 'AVERAGE', variant: 'warning' };
+      return { label: 'POOR', variant: 'loss' };
+    }
+    case 'sortino': {
+      if (value >= 3.0) return { label: 'EXCEPTIONAL', variant: 'profit' };
+      if (value >= 2.0) return { label: 'EXCELLENT', variant: 'profit' };
+      if (value >= 1.0) return { label: 'GOOD', variant: 'profit' };
+      if (value >= 0)   return { label: 'AVERAGE', variant: 'warning' };
+      return { label: 'POOR', variant: 'loss' };
+    }
+    case 'return': {
+      if (value >= 25) return { label: 'EXCEPTIONAL', variant: 'profit' };
+      if (value >= 18) return { label: 'EXCELLENT', variant: 'profit' };
+      if (value >= 12) return { label: 'BEATS NIFTY', variant: 'profit' };
+      if (value >= 7)  return { label: 'BEATS FD', variant: 'warning' };
+      return { label: 'BELOW FD', variant: 'loss' };
+    }
+    case 'volatility': {
+      if (value <= 10) return { label: 'LOW RISK', variant: 'profit' };
+      if (value <= 15) return { label: 'MODERATE', variant: 'warning' };
+      if (value <= 25) return { label: 'HIGH', variant: 'warning' };
+      return { label: 'VERY HIGH', variant: 'loss' };
+    }
+    case 'drawdown': {
+      const abs = Math.abs(value);
+      if (abs <= 5)  return { label: 'EXCELLENT', variant: 'profit' };
+      if (abs <= 10) return { label: 'CONTROLLED', variant: 'profit' };
+      if (abs <= 20) return { label: 'MODERATE', variant: 'warning' };
+      return { label: 'HIGH RISK', variant: 'loss' };
+    }
+    default: return { label: '', variant: 'neutral' };
+  }
+}
 
 // ── Metric info definitions ──
 function getMetricDetails(data: PortfolioSummaryResponse): Record<string, MetricDetail & { interpret: string }> {
@@ -93,6 +138,40 @@ const PAGE_INFO = {
   ],
 };
 
+// ── Investment Simulator types ──
+interface SimStock {
+  ticker: string; sector: string; weight: number;
+  invested: number; currentValue: number; profit: number; returnPct: number;
+}
+interface SimResult {
+  totalInvested: number; totalValue: number; totalProfit: number;
+  totalReturnPct: number; perStock: SimStock[];
+  bySector: Record<string, { invested: number; value: number; profit: number }>;
+}
+
+function runSimulation(amount: number, holdings: PortfolioSummaryResponse['holdings']): SimResult {
+  const perStock: SimStock[] = holdings.map(h => {
+    const invested = amount * (h.weight / 100);
+    const currentValue = invested * (1 + h.cumulative_return / 100);
+    const profit = currentValue - invested;
+    return { ticker: h.ticker.replace('.NS', ''), sector: h.sector, weight: h.weight, invested, currentValue, profit, returnPct: h.cumulative_return };
+  });
+  const totalInvested = amount;
+  const totalValue = perStock.reduce((s, x) => s + x.currentValue, 0);
+  const totalProfit = totalValue - totalInvested;
+  const totalReturnPct = (totalProfit / totalInvested) * 100;
+  const bySector: SimResult['bySector'] = {};
+  for (const s of perStock) {
+    if (!bySector[s.sector]) bySector[s.sector] = { invested: 0, value: 0, profit: 0 };
+    bySector[s.sector].invested += s.invested;
+    bySector[s.sector].value += s.currentValue;
+    bySector[s.sector].profit += s.profit;
+  }
+  return { totalInvested, totalValue, totalProfit, totalReturnPct, perStock, bySector };
+}
+
+const fmt = (n: number) => '₹' + Math.round(n).toLocaleString('en-IN');
+
 export default function Portfolio() {
   const [data, setData] = useState<PortfolioSummaryResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -100,6 +179,15 @@ export default function Portfolio() {
   const [expandedMetric, setExpandedMetric] = useState<string | null>(null);
   const [selectedStock, setSelectedStock] = useState<StockDetailResponse | null>(null);
   const [stockLoading, setStockLoading] = useState(false);
+
+  // simulator
+  const [simOpen, setSimOpen] = useState(false);
+  const [simInput, setSimInput] = useState('100000');
+  const [simResult, setSimResult] = useState<SimResult | null>(null);
+  const [simStockSort, setSimStockSort] = useState<'profit' | 'loss' | 'weight'>('profit');
+  const [startDate, setStartDate] = useState('2020-01-01');
+  const [growthResult, setGrowthResult] = useState<GrowthResponse | null>(null);
+  const [growthLoading, setGrowthLoading] = useState(false);
 
   function handleStockClick(ticker: string) {
     if (selectedStock?.ticker === ticker.replace('.NS', '')) {
@@ -109,7 +197,10 @@ export default function Portfolio() {
     setStockLoading(true);
     api.stockDetail(ticker.replace('.NS', ''))
       .then(d => { setSelectedStock(d); setStockLoading(false); })
-      .catch(() => setStockLoading(false));
+      .catch(e => {
+        setStockLoading(false);
+        toast.error(e instanceof Error ? e.message : 'Failed to load stock details');
+      });
   }
 
   useEffect(() => {
@@ -123,9 +214,18 @@ export default function Portfolio() {
 
   if (loading) {
     return (
-      <div className="flex flex-col items-center justify-center h-96 gap-4">
-        <Loader2 size={32} className="animate-spin text-primary" />
-        <p className="text-text-secondary text-sm">Loading portfolio data...</p>
+      <div className="space-y-6">
+        <Skeleton className="h-8 w-64 mb-2" rounded="lg" />
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
+          {Array.from({ length: 5 }).map((_, i) => <MetricCardSkeleton key={i} />)}
+        </div>
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          <Skeleton className="h-64" rounded="xl" />
+          <Skeleton className="h-64" rounded="xl" />
+        </div>
+        <div className="space-y-2">
+          {Array.from({ length: 8 }).map((_, i) => <TableRowSkeleton key={i} cols={4} />)}
+        </div>
       </div>
     );
   }
@@ -148,6 +248,12 @@ export default function Portfolio() {
 
   const COLORS = ['#C15F3C', '#6366F1', '#0D9488', '#F59E0B', '#EC4899', '#8B5CF6', '#10B981', '#F97316', '#06B6D4', '#EF4444', '#84CC16'];
 
+  // Sector → color map (same order as bar chart so dots match bars)
+  const sectorColorMap = Object.fromEntries(allocData.map((d, i) => [d.sector, COLORS[i % COLORS.length]]));
+
+  // Normalize return bars to the max absolute return in holdings
+  const maxAbsReturn = Math.max(...data.holdings.map(h => Math.abs(h.cumulative_return)), 1);
+
   return (
     <div>
       <div className="flex items-center justify-between">
@@ -163,18 +269,23 @@ export default function Portfolio() {
       <motion.div variants={staggerContainer} initial="hidden" animate="visible"
         className="grid grid-cols-2 lg:grid-cols-5 gap-4 mb-2">
         <MetricCard title="Sharpe Ratio" value={data.sharpe_ratio} decimals={4}
+          badge={getMetricBadge('sharpe', data.sharpe_ratio)}
           onClick={() => setExpandedMetric(m => m === 'Sharpe Ratio' ? null : 'Sharpe Ratio')}
           active={expandedMetric === 'Sharpe Ratio'} />
         <MetricCard title="Sortino Ratio" value={data.sortino_ratio} decimals={4}
+          badge={getMetricBadge('sortino', data.sortino_ratio)}
           onClick={() => setExpandedMetric(m => m === 'Sortino Ratio' ? null : 'Sortino Ratio')}
           active={expandedMetric === 'Sortino Ratio'} />
         <MetricCard title="Annual Return" value={data.annualized_return * 100} decimals={2} suffix="%"
+          badge={getMetricBadge('return', data.annualized_return * 100)}
           onClick={() => setExpandedMetric(m => m === 'Annual Return' ? null : 'Annual Return')}
           active={expandedMetric === 'Annual Return'} />
         <MetricCard title="Volatility" value={data.annualized_volatility * 100} decimals={2} suffix="%"
+          badge={getMetricBadge('volatility', data.annualized_volatility * 100)}
           onClick={() => setExpandedMetric(m => m === 'Volatility' ? null : 'Volatility')}
           active={expandedMetric === 'Volatility'} />
         <MetricCard title="Max Drawdown" value={data.max_drawdown * 100} decimals={2} suffix="%"
+          badge={getMetricBadge('drawdown', data.max_drawdown * 100)}
           onClick={() => setExpandedMetric(m => m === 'Max Drawdown' ? null : 'Max Drawdown')}
           active={expandedMetric === 'Max Drawdown'} />
       </motion.div>
@@ -204,6 +315,12 @@ export default function Portfolio() {
                 {allocData.map((_, i) => (
                   <Cell key={i} fill={COLORS[i % COLORS.length]} opacity={0.85} />
                 ))}
+                <LabelList
+                  dataKey="weight"
+                  position="right"
+                  formatter={(v: unknown) => `${v}%`}
+                  style={{ fontSize: 11, fill: '#6B7280', fontFamily: 'JetBrains Mono, monospace' }}
+                />
               </Bar>
             </BarChart>
           </ResponsiveContainer>
@@ -235,14 +352,32 @@ export default function Portfolio() {
                         ? 'bg-primary-subtle border-l-[3px] border-l-primary'
                         : 'hover:bg-bg-card hover:shadow-[0_2px_8px_rgba(193,95,60,0.06)]'
                     }`}>
-                    <td className="py-2 text-text-muted font-mono">{i + 1}</td>
-                    <td className="py-2 font-mono font-medium text-text">{h.ticker.replace('.NS', '')}</td>
-                    <td className="py-2 text-text-secondary">{h.sector}</td>
-                    <td className="py-2 text-right font-mono">{h.weight.toFixed(1)}%</td>
-                    <td className={`py-2 text-right font-mono font-medium ${
-                      h.cumulative_return >= 0 ? 'text-profit' : 'text-loss'
-                    }`}>
-                      {h.cumulative_return > 0 ? '+' : ''}{h.cumulative_return.toFixed(1)}%
+                    <td className="py-2 text-text-muted font-mono text-xs">{i + 1}</td>
+                    <td className="py-2 font-mono font-semibold text-text">{h.ticker.replace('.NS', '')}</td>
+                    <td className="py-2">
+                      <div className="flex items-center gap-1.5">
+                        <span
+                          className="w-2 h-2 rounded-full shrink-0"
+                          style={{ background: sectorColorMap[h.sector] ?? '#9CA3AF' }}
+                        />
+                        <span className="text-text-secondary text-xs truncate max-w-[90px]">{h.sector}</span>
+                      </div>
+                    </td>
+                    <td className="py-2 text-right font-mono text-xs">{h.weight.toFixed(1)}%</td>
+                    <td className="py-2 text-right relative">
+                      {/* Return bar fill behind text */}
+                      <div
+                        className="absolute inset-y-0.5 right-0 rounded-l opacity-[0.13]"
+                        style={{
+                          width: `${(Math.abs(h.cumulative_return) / maxAbsReturn) * 100}%`,
+                          background: h.cumulative_return >= 0 ? '#16A34A' : '#DC2626',
+                        }}
+                      />
+                      <span className={`relative z-10 font-mono font-semibold text-xs ${
+                        h.cumulative_return >= 0 ? 'text-profit' : 'text-loss'
+                      }`}>
+                        {h.cumulative_return > 0 ? '+' : ''}{h.cumulative_return.toFixed(1)}%
+                      </span>
                     </td>
                   </tr>
                 ))}
@@ -259,7 +394,7 @@ export default function Portfolio() {
             initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
             className="flex items-center gap-3 p-4 mb-6"
           >
-            <Loader2 size={18} className="animate-spin text-primary" />
+            <Skeleton className="h-4 w-4 rounded-full" />
             <span className="text-sm text-text-secondary">Loading stock data...</span>
           </motion.div>
         )}
@@ -273,7 +408,7 @@ export default function Portfolio() {
             transition={{ type: 'spring', stiffness: 200, damping: 25 }}
             className="overflow-hidden mb-6"
           >
-            <div className="bg-white border border-primary-light rounded-2xl p-6 shadow-[0_10px_30px_rgba(193,95,60,0.08)]">
+            <div className="bg-white/90 backdrop-blur-md border border-primary/20 rounded-2xl p-6 shadow-[0_16px_40px_rgba(193,95,60,0.12),0_4px_12px_rgba(0,0,0,0.06)]">
               {/* Header */}
               <div className="flex items-start justify-between mb-5">
                 <div>
@@ -363,6 +498,326 @@ export default function Portfolio() {
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* ── Investment Simulator ── */}
+      <Card className="mb-6">
+        <button
+          onClick={() => setSimOpen(o => !o)}
+          className="w-full flex items-center justify-between group"
+        >
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-xl bg-primary-subtle flex items-center justify-center">
+              <Calculator size={18} className="text-primary" />
+            </div>
+            <div className="text-left">
+              <h2 className="font-display font-bold text-lg text-secondary">Investment Simulator</h2>
+              <p className="text-xs text-text-muted">Enter your amount — see exact ₹ breakdown per stock & sector</p>
+            </div>
+          </div>
+          {simOpen ? <ChevronUp size={18} className="text-text-muted" /> : <ChevronDown size={18} className="text-text-muted" />}
+        </button>
+
+        <AnimatePresence>
+          {simOpen && (
+            <motion.div
+              initial={{ height: 0, opacity: 0 }}
+              animate={{ height: 'auto', opacity: 1 }}
+              exit={{ height: 0, opacity: 0 }}
+              transition={{ type: 'spring', stiffness: 220, damping: 26 }}
+              className="overflow-hidden"
+            >
+              <div className="mt-5">
+                {/* Input row */}
+                <div className="flex flex-wrap gap-3 items-end mb-6">
+                  <div className="flex-1 min-w-[200px]">
+                    <label className="text-xs font-medium text-text-secondary mb-1.5 block">
+                      Total Investment Amount
+                    </label>
+                    <div className="relative">
+                      <IndianRupee size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-text-muted" />
+                      <input
+                        type="number"
+                        min={1000}
+                        step={1000}
+                        value={simInput}
+                        onChange={e => setSimInput(e.target.value)}
+                        className="w-full pl-8 pr-4 py-2.5 border border-border rounded-xl text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary bg-bg-card"
+                        placeholder="e.g. 100000"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Quick presets */}
+                  <div className="flex gap-2 flex-wrap">
+                    {[10000, 50000, 100000, 500000, 1000000].map(amt => (
+                      <button key={amt}
+                        onClick={() => setSimInput(String(amt))}
+                        className={`px-3 py-2 rounded-xl text-xs font-mono font-medium border transition-all ${
+                          simInput === String(amt)
+                            ? 'bg-primary text-white border-primary'
+                            : 'bg-bg-card border-border text-text-secondary hover:border-primary hover:text-primary'
+                        }`}
+                      >
+                        {amt >= 100000 ? `₹${amt / 100000}L` : `₹${amt / 1000}K`}
+                      </button>
+                    ))}
+                  </div>
+
+                  {/* Date picker */}
+                  <div>
+                    <label className="text-xs font-medium text-text-secondary mb-1.5 block">
+                      Invest From Date
+                    </label>
+                    <input
+                      type="date"
+                      value={startDate}
+                      min="2015-01-01"
+                      max="2024-12-31"
+                      onChange={e => setStartDate(e.target.value)}
+                      className="px-3 py-2.5 border border-border rounded-xl text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary bg-bg-card"
+                    />
+                  </div>
+
+                  <button
+                    onClick={() => {
+                      const amt = parseFloat(simInput);
+                      if (!isNaN(amt) && amt >= 1000 && data) {
+                        const result = runSimulation(amt, data.holdings);
+                        setSimResult(result);
+                      } else if (isNaN(amt) || amt < 1000) {
+                        toast.warning('Enter a valid amount (min ₹1,000)');
+                      }
+                    }}
+                    className="px-5 py-2.5 bg-primary text-white rounded-xl text-sm font-medium hover:bg-primary/90 transition-colors flex items-center gap-2"
+                  >
+                    <Calculator size={15} /> Calculate
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      const amt = parseFloat(simInput);
+                      if (!isNaN(amt) && amt >= 1000 && startDate) {
+                        setGrowthLoading(true);
+                        setGrowthResult(null);
+                        api.portfolioGrowth(amt, startDate)
+                          .then(d => { setGrowthResult(d); setGrowthLoading(false); })
+                          .catch(() => { setGrowthLoading(false); toast.error('Growth chart failed'); });
+                      }
+                    }}
+                    className="px-5 py-2.5 bg-secondary text-white rounded-xl text-sm font-medium hover:bg-secondary/90 transition-colors flex items-center gap-2"
+                  >
+                    <TrendingUp size={15} /> Growth Chart
+                  </button>
+
+                  {(simResult || growthResult) && (
+                    <button onClick={() => { setSimResult(null); setGrowthResult(null); }}
+                      className="px-3 py-2.5 rounded-xl border border-border text-text-muted hover:text-loss hover:border-loss transition-colors text-sm">
+                      <X size={15} />
+                    </button>
+                  )}
+                </div>
+
+                {/* Results */}
+                <AnimatePresence>
+                  {(simResult || growthResult) && (
+                    <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}>
+
+                      {/* Summary cards — use growthResult when available (date-accurate), else simResult (1-yr) */}
+                      {(() => {
+                        type Tint = 'profit' | 'loss' | 'neutral';
+                        const mk = (label: string, value: string, color: string, tint: Tint) => ({ label, value, color, tint });
+                        const cards = growthResult
+                          ? [
+                              mk('Invested', fmt(growthResult.amount), 'text-text', 'neutral'),
+                              mk(`Value (${growthResult.start_date} → today)`, fmt(growthResult.final_portfolio), growthResult.portfolio_profit >= 0 ? 'text-profit' : 'text-loss', growthResult.portfolio_profit >= 0 ? 'profit' : 'loss'),
+                              mk('Total Profit / Loss', `${growthResult.portfolio_profit >= 0 ? '+' : ''}${fmt(growthResult.portfolio_profit)}`, growthResult.portfolio_profit >= 0 ? 'text-profit' : 'text-loss', growthResult.portfolio_profit >= 0 ? 'profit' : 'loss'),
+                              mk('Return %', `${growthResult.portfolio_return_pct >= 0 ? '+' : ''}${growthResult.portfolio_return_pct.toFixed(2)}%`, growthResult.portfolio_return_pct >= 0 ? 'text-profit' : 'text-loss', growthResult.portfolio_return_pct >= 0 ? 'profit' : 'loss'),
+                            ]
+                          : simResult
+                          ? [
+                              mk('Invested', fmt(simResult.totalInvested), 'text-text', 'neutral'),
+                              mk('Value (last 1 year)', fmt(simResult.totalValue), simResult.totalProfit >= 0 ? 'text-profit' : 'text-loss', simResult.totalProfit >= 0 ? 'profit' : 'loss'),
+                              mk('Profit / Loss (1yr)', `${simResult.totalProfit >= 0 ? '+' : ''}${fmt(simResult.totalProfit)}`, simResult.totalProfit >= 0 ? 'text-profit' : 'text-loss', simResult.totalProfit >= 0 ? 'profit' : 'loss'),
+                              mk('Return % (1yr)', `${simResult.totalReturnPct >= 0 ? '+' : ''}${simResult.totalReturnPct.toFixed(2)}%`, simResult.totalReturnPct >= 0 ? 'text-profit' : 'text-loss', simResult.totalReturnPct >= 0 ? 'profit' : 'loss'),
+                            ]
+                          : [];
+                        const tintCls: Record<Tint, string> = {
+                          profit:  'bg-gradient-to-br from-profit/[0.08] to-transparent border-profit/25',
+                          loss:    'bg-gradient-to-br from-loss/[0.08] to-transparent border-loss/25',
+                          neutral: 'bg-bg-card border-border-light',
+                        };
+                        return (
+                          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-5">
+                            {cards.map((c, idx) => (
+                              <motion.div
+                                key={c.label}
+                                initial={{ opacity: 0, y: 8 }}
+                                animate={{ opacity: 1, y: 0 }}
+                                transition={{ delay: idx * 0.06, type: 'spring', stiffness: 200, damping: 20 }}
+                                className={`rounded-xl px-4 py-3 border ${tintCls[c.tint]}`}
+                              >
+                                <p className="text-[10px] uppercase tracking-wider text-text-muted font-medium mb-0.5">{c.label}</p>
+                                <p className={`font-mono font-bold text-base ${c.color}`}>{c.value}</p>
+                              </motion.div>
+                            ))}
+                          </div>
+                        );
+                      })()}
+                      {!growthResult && simResult && (
+                        <p className="text-xs text-text-muted mb-4 -mt-2">
+                          ℹ️ These values use last 1-year returns. Click <strong>Growth Chart</strong> to see returns from your selected date.
+                        </p>
+                      )}
+
+                      {/* ── Growth Chart ── */}
+                      <AnimatePresence>
+                        {growthLoading && (
+                          <div className="flex items-center gap-2 py-4 text-sm text-text-secondary">
+                            <svg className="animate-spin h-4 w-4 text-primary" viewBox="0 0 24 24" fill="none">
+                              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/>
+                            </svg>
+                            Fetching 10 years of market data...
+                          </div>
+                        )}
+                        {growthResult && !growthLoading && (
+                          <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} className="mb-5">
+                            <div className="flex items-center justify-between mb-3">
+                              <h3 className="text-sm font-semibold text-text-secondary">
+                                ₹ Growth Over Time — from {growthResult.start_date} to {growthResult.end_date}
+                              </h3>
+                              <span className="text-xs text-text-muted">{growthResult.n_days} trading days</span>
+                            </div>
+
+                            {/* Final value comparison */}
+                            <div className="grid grid-cols-3 gap-3 mb-4">
+                              {[
+                                { label: 'Our Portfolio', final: growthResult.final_portfolio, ret: growthResult.portfolio_return_pct, profit: growthResult.portfolio_profit, color: '#C15F3C' },
+                                { label: 'NIFTY 50 Index', final: growthResult.final_nifty, ret: growthResult.nifty_return_pct, profit: growthResult.nifty_profit, color: '#6366F1' },
+                                { label: 'Fixed Deposit (7%)', final: growthResult.final_fd, ret: growthResult.fd_return_pct, profit: growthResult.fd_profit, color: '#10B981' },
+                              ].map(c => (
+                                <div key={c.label} className="bg-bg-card rounded-xl px-3 py-3 border border-border-light">
+                                  <div className="flex items-center gap-1.5 mb-1">
+                                    <div className="w-2.5 h-2.5 rounded-full" style={{ background: c.color }} />
+                                    <p className="text-[10px] font-medium text-text-muted">{c.label}</p>
+                                  </div>
+                                  <p className="font-mono font-bold text-sm text-text">{fmt(c.final)}</p>
+                                  <p className={`font-mono text-xs mt-0.5 ${c.profit >= 0 ? 'text-profit' : 'text-loss'}`}>
+                                    {c.profit >= 0 ? '+' : ''}{fmt(c.profit)} ({c.ret >= 0 ? '+' : ''}{c.ret}%)
+                                  </p>
+                                </div>
+                              ))}
+                            </div>
+
+                            {/* Line chart */}
+                            <ResponsiveContainer width="100%" height={240} minHeight={1}>
+                              <LineChart data={growthResult.series} margin={{ top: 5, right: 5, bottom: 0, left: 10 }}>
+                                <CartesianGrid stroke="#F3F4F6" strokeDasharray="3 3" vertical={false} />
+                                <XAxis dataKey="date" tick={{ fontSize: 10, fill: '#9CA3AF' }} axisLine={false} tickLine={false}
+                                  tickFormatter={d => d.slice(0, 7)} interval={Math.floor(growthResult.series.length / 6)} />
+                                <YAxis tick={{ fontSize: 10, fill: '#9CA3AF' }} axisLine={false} tickLine={false}
+                                  tickFormatter={v => `₹${(v / 1000).toFixed(0)}K`} />
+                                <Tooltip
+                                  contentStyle={{ background: '#fff', border: '1px solid #E5E7EB', borderRadius: 12, fontSize: 12 }}
+                                  formatter={(v, name) => [
+                                    `₹${Math.round(Number(v)).toLocaleString('en-IN')}`,
+                                    name === 'portfolio_value' ? 'Our Portfolio' : name === 'nifty_value' ? 'NIFTY 50' : 'FD (7%)'
+                                  ]}
+                                  labelFormatter={d => `Date: ${d}`}
+                                />
+                                <ReferenceLine y={growthResult.amount} stroke="#9CA3AF" strokeDasharray="4 4" label={{ value: 'Invested', position: 'left', fontSize: 10, fill: '#9CA3AF' }} />
+                                <Legend formatter={v => v === 'portfolio_value' ? 'Our Portfolio' : v === 'nifty_value' ? 'NIFTY 50' : 'FD (7%)'} />
+                                <Line type="monotone" dataKey="portfolio_value" stroke="#C15F3C" strokeWidth={2} dot={false} animationDuration={600} />
+                                <Line type="monotone" dataKey="nifty_value" stroke="#6366F1" strokeWidth={2} dot={false} animationDuration={600} />
+                                <Line type="monotone" dataKey="fd_value" stroke="#10B981" strokeWidth={1.5} strokeDasharray="4 4" dot={false} animationDuration={600} />
+                              </LineChart>
+                            </ResponsiveContainer>
+                          </motion.div>
+                        )}
+                      </AnimatePresence>
+
+                      {/* Sector + per-stock: only when simResult available (1-year breakdown) */}
+                      {simResult && (
+                        <>
+                          <h3 className="text-sm font-semibold text-text-secondary mb-2">Sector Breakdown (1-year)</h3>
+                          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2 mb-5">
+                            {Object.entries(simResult.bySector)
+                              .sort((a, b) => b[1].invested - a[1].invested)
+                              .map(([sector, s]) => (
+                                <div key={sector} className="bg-bg-card rounded-xl px-3 py-2.5 border border-border-light">
+                                  <p className="text-[10px] font-medium text-text-muted truncate mb-1">{sector}</p>
+                                  <p className="font-mono text-xs font-bold text-text">{fmt(s.invested)}</p>
+                                  <p className={`font-mono text-xs mt-0.5 ${s.profit >= 0 ? 'text-profit' : 'text-loss'}`}>
+                                    {s.profit >= 0 ? '+' : ''}{fmt(s.profit)}
+                                  </p>
+                                </div>
+                              ))}
+                          </div>
+
+                          <div className="flex items-center justify-between mb-2">
+                            <h3 className="text-sm font-semibold text-text-secondary">Per-Stock Breakdown (1-year)</h3>
+                            <div className="flex gap-1.5">
+                              {(['profit', 'loss', 'weight'] as const).map(s => (
+                                <button key={s}
+                                  onClick={() => setSimStockSort(s)}
+                                  className={`px-2.5 py-1 rounded-lg text-xs font-medium border transition-all ${
+                                    simStockSort === s ? 'bg-primary text-white border-primary' : 'bg-bg-card border-border text-text-muted hover:border-primary'
+                                  }`}>
+                                  {s === 'profit' ? 'Top Gainers' : s === 'loss' ? 'Top Losers' : 'By Weight'}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+
+                          <div className="max-h-72 overflow-y-auto rounded-xl border border-border-light">
+                            <table className="w-full text-sm">
+                              <thead className="sticky top-0 bg-white border-b border-border">
+                                <tr>
+                                  <th className="text-left py-2 px-3 font-medium text-text-secondary">#</th>
+                                  <th className="text-left py-2 px-3 font-medium text-text-secondary">Stock</th>
+                                  <th className="text-left py-2 px-3 font-medium text-text-secondary hidden sm:table-cell">Sector</th>
+                                  <th className="text-right py-2 px-3 font-medium text-text-secondary">Invested</th>
+                                  <th className="text-right py-2 px-3 font-medium text-text-secondary">Value</th>
+                                  <th className="text-right py-2 px-3 font-medium text-text-secondary">P&amp;L</th>
+                                  <th className="text-right py-2 px-3 font-medium text-text-secondary">Ret%</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {[...simResult.perStock]
+                                  .sort((a, b) =>
+                                    simStockSort === 'profit' ? b.profit - a.profit :
+                                    simStockSort === 'loss' ? a.profit - b.profit :
+                                    b.weight - a.weight
+                                  )
+                                  .map((s, i) => (
+                                    <tr key={s.ticker} className="border-b border-border-light hover:bg-bg-card transition-colors">
+                                      <td className="py-2 px-3 text-text-muted font-mono text-xs">{i + 1}</td>
+                                      <td className="py-2 px-3 font-mono font-semibold text-text text-xs">{s.ticker}</td>
+                                      <td className="py-2 px-3 text-text-secondary text-xs hidden sm:table-cell">{s.sector}</td>
+                                      <td className="py-2 px-3 text-right font-mono text-xs text-text">{fmt(s.invested)}</td>
+                                      <td className="py-2 px-3 text-right font-mono text-xs text-text">{fmt(s.currentValue)}</td>
+                                      <td className={`py-2 px-3 text-right font-mono font-semibold text-xs ${s.profit >= 0 ? 'text-profit' : 'text-loss'}`}>
+                                        {s.profit >= 0 ? '+' : ''}{fmt(s.profit)}
+                                      </td>
+                                      <td className={`py-2 px-3 text-right font-mono text-xs ${s.returnPct >= 0 ? 'text-profit' : 'text-loss'}`}>
+                                        {s.returnPct >= 0 ? '+' : ''}{s.returnPct.toFixed(1)}%
+                                      </td>
+                                    </tr>
+                                  ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        </>
+                      )}
+
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </Card>
     </div>
   );
 }

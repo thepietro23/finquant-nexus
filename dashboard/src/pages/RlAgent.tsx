@@ -1,9 +1,10 @@
 import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
-  Brain, Zap, Target, BarChart3, Loader2, AlertTriangle,
+  Brain, Zap, Target, BarChart3, AlertTriangle,
   TrendingDown, Shield, ArrowUpRight, ArrowDownRight,
 } from 'lucide-react';
+import { MetricCardSkeleton, Skeleton } from '../components/ui/Skeleton';
 import {
   ResponsiveContainer, AreaChart, Area, XAxis, YAxis,
   CartesianGrid, Tooltip, Legend, BarChart, Bar, Cell,
@@ -18,6 +19,28 @@ import PageInfoPanel from '../components/ui/PageInfoPanel';
 import MetricInfoPanel from '../components/ui/MetricInfoPanel';
 import Badge from '../components/ui/Badge';
 import { staggerContainer } from '../lib/animations';
+import { toast } from '../lib/toast';
+import type { MetricBadge } from '../components/ui/MetricCard';
+
+function getRLBadge(metric: 'sharpe' | 'reward' | 'drawdown', value: number): MetricBadge {
+  if (metric === 'sharpe') {
+    if (value >= 1.0) return { label: 'EXCELLENT', variant: 'profit' };
+    if (value >= 0.5) return { label: 'GOOD', variant: 'profit' };
+    if (value >= 0)   return { label: 'AVERAGE', variant: 'warning' };
+    return { label: 'POOR', variant: 'loss' };
+  }
+  if (metric === 'reward') {
+    if (value >= 1.2) return { label: 'EXCELLENT', variant: 'profit' };
+    if (value >= 0.7) return { label: 'GOOD', variant: 'profit' };
+    if (value >= 0.3) return { label: 'LEARNING', variant: 'warning' };
+    return { label: 'EARLY', variant: 'neutral' };
+  }
+  // drawdown
+  const abs = Math.abs(value * 100);
+  if (abs <= 5)  return { label: 'EXCELLENT', variant: 'profit' };
+  if (abs <= 15) return { label: 'ACCEPTABLE', variant: 'warning' };
+  return { label: 'HIGH RISK', variant: 'loss' };
+}
 
 const PAGE_INFO = {
   title: 'RL Agent Monitor — What Does This Page Show?',
@@ -81,7 +104,9 @@ const ALGO_DESC: Record<AgentType, string> = {
 }
 
 function getM(data: RLSummaryResponse, algo: AgentType, field: string): number {
-  return ((data as unknown as Record<string, number>)[`${ALGO_PREFIX[algo]}_${field}`]) ?? 0
+  const key = `${ALGO_PREFIX[algo]}_${field}` as keyof RLSummaryResponse
+  const v = data[key]
+  return typeof v === 'number' ? v : 0
 }
 
 export default function RlAgent() {
@@ -102,9 +127,18 @@ export default function RlAgent() {
   }, []);
 
   if (loading) return (
-    <div className="flex flex-col items-center justify-center h-96 gap-4">
-      <Loader2 size={32} className="animate-spin text-primary" />
-      <p className="text-text-secondary text-sm">Loading RL agent data from real stock returns...</p>
+    <div className="space-y-6">
+      <Skeleton className="h-8 w-56 mb-2" rounded="lg" />
+      <div className="flex gap-2">
+        {Array.from({ length: 6 }).map((_, i) => <Skeleton key={i} className="h-9 w-24" rounded="xl" />)}
+      </div>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        {Array.from({ length: 4 }).map((_, i) => <MetricCardSkeleton key={i} />)}
+      </div>
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <Skeleton className="h-64" rounded="xl" />
+        <Skeleton className="h-64" rounded="xl" />
+      </div>
     </div>
   );
 
@@ -153,17 +187,38 @@ export default function RlAgent() {
       {/* 6-Algorithm Selector */}
       <div className="flex flex-wrap items-center gap-2 mb-6">
         {(Object.keys(ALGO_PREFIX) as AgentType[]).map(a => (
-          <button key={a} onClick={() => setAgent(a)}
-            className={`px-4 py-2 rounded-xl text-sm font-medium transition-all border ${
+          <motion.button
+            key={a}
+            onClick={() => { setAgent(a); toast.info(`Switched to ${a} — ${ALGO_DESC[a]}`); }}
+            whileTap={{ scale: 0.94 }}
+            whileHover={{ y: -1 }}
+            transition={{ type: 'spring', stiffness: 400, damping: 20 }}
+            className={`relative px-4 py-2 rounded-xl text-sm font-medium border overflow-hidden transition-colors ${
               agent === a
-                ? 'text-white shadow-md border-transparent'
-                : 'bg-bg-card text-text-secondary hover:bg-primary-subtle border-border'
+                ? 'text-white border-transparent shadow-md'
+                : 'bg-bg-card text-text-secondary hover:text-text border-border'
             }`}
-            style={agent === a ? { backgroundColor: ALGO_COLORS[a], borderColor: ALGO_COLORS[a] } : {}}>
-            {a === 'Ensemble' ? '★ Ensemble' : a}
-          </button>
+            style={agent === a ? { backgroundColor: ALGO_COLORS[a], borderColor: ALGO_COLORS[a] } : {}}
+          >
+            {agent === a && (
+              <motion.span
+                layoutId="algo-active-bg"
+                className="absolute inset-0 rounded-xl"
+                style={{ backgroundColor: ALGO_COLORS[a] }}
+                transition={{ type: 'spring', stiffness: 300, damping: 28 }}
+              />
+            )}
+            <span className="relative z-10">{a === 'Ensemble' ? '★ Ensemble' : a}</span>
+          </motion.button>
         ))}
-        <span className="text-xs text-text-muted ml-1">{ALGO_DESC[agent]}</span>
+        <motion.span
+          key={agent}
+          initial={{ opacity: 0, x: -6 }}
+          animate={{ opacity: 1, x: 0 }}
+          className="text-xs text-text-muted ml-1 italic"
+        >
+          {ALGO_DESC[agent]}
+        </motion.span>
       </div>
 
       {/* Metric Cards — selected algorithm */}
@@ -172,10 +227,13 @@ export default function RlAgent() {
         <MetricCard title="Episodes" value={getM(data, agent, 'episodes')} decimals={0} icon={<Target size={18} />}
           onClick={() => setExpandedMetric(m => m === 'Episodes' ? null : 'Episodes')} active={expandedMetric === 'Episodes'} />
         <MetricCard title="Avg Reward" value={getM(data, agent, 'avg_reward')} decimals={4} icon={<Zap size={18} />}
+          badge={getRLBadge('reward', getM(data, agent, 'avg_reward'))}
           onClick={() => setExpandedMetric(m => m === 'Avg Reward' ? null : 'Avg Reward')} active={expandedMetric === 'Avg Reward'} />
         <MetricCard title="Sharpe (Val)" value={getM(data, agent, 'sharpe')} decimals={4} icon={<BarChart3 size={18} />}
+          badge={getRLBadge('sharpe', getM(data, agent, 'sharpe'))}
           onClick={() => setExpandedMetric(m => m === 'Sharpe (Val)' ? null : 'Sharpe (Val)')} active={expandedMetric === 'Sharpe (Val)'} />
         <MetricCard title="Max Drawdown" value={getM(data, agent, 'max_drawdown') * 100} decimals={2} suffix="%"
+          badge={getRLBadge('drawdown', getM(data, agent, 'max_drawdown'))}
           onClick={() => setExpandedMetric(m => m === 'Max Drawdown' ? null : 'Max Drawdown')} active={expandedMetric === 'Max Drawdown'} />
       </motion.div>
       <MetricInfoPanel expandedMetric={expandedMetric} onClose={() => setExpandedMetric(null)} details={METRIC_DETAILS} />
@@ -196,26 +254,46 @@ export default function RlAgent() {
               </tr>
             </thead>
             <tbody>
-              {allAlgos.map(a => {
+              {allAlgos.map((a, rowIdx) => {
                 const isEnsemble = a === 'Ensemble'
                 const isBest = getM(data, a, 'sharpe') === bestSharpe
+                const sharpe = getM(data, a, 'sharpe')
+                const barPct = bestSharpe > 0 ? Math.max(0, (sharpe / bestSharpe)) * 100 : 0
+                const annRet = getM(data, a, 'annual_return')
                 return (
-                  <tr key={a} onClick={() => setAgent(a)} style={{ cursor: 'pointer' }}
-                    className={`border-b border-border-light transition-colors ${
-                      agent === a ? 'bg-primary-subtle' : 'hover:bg-bg-card'
-                    } ${isEnsemble ? 'font-semibold' : ''}`}>
-                    <td className="py-2.5 flex items-center gap-2">
+                  <motion.tr
+                    key={a}
+                    initial={{ opacity: 0, x: -12 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    transition={{ delay: rowIdx * 0.05, type: 'spring', stiffness: 180, damping: 20 }}
+                    onClick={() => setAgent(a)}
+                    className={`border-b border-border-light cursor-pointer transition-colors ${
+                      agent === a
+                        ? 'bg-primary-subtle border-l-[3px] border-l-primary'
+                        : 'hover:bg-bg-card'
+                    } ${isEnsemble ? 'font-semibold' : ''}`}
+                  >
+                    <td className="py-2.5 pl-3 flex items-center gap-2">
                       <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: ALGO_COLORS[a] }} />
                       {a}
                       {isBest && <Badge variant="profit">Best</Badge>}
                       {isEnsemble && <Badge variant="info">Recommended</Badge>}
                     </td>
-                    <td className="py-2.5 text-right font-mono">{getM(data, a, 'sharpe').toFixed(4)}</td>
+                    {/* Sharpe with fill bar */}
+                    <td className="py-2.5 text-right font-mono relative pr-3">
+                      <div
+                        className="absolute inset-y-1 right-0 rounded-l opacity-[0.12]"
+                        style={{ width: `${barPct}%`, background: ALGO_COLORS[a] }}
+                      />
+                      <span className="relative z-10">{sharpe.toFixed(4)}</span>
+                    </td>
                     <td className="py-2.5 text-right font-mono">{getM(data, a, 'sortino').toFixed(4)}</td>
-                    <td className="py-2.5 text-right font-mono">{getM(data, a, 'annual_return').toFixed(2)}%</td>
-                    <td className="py-2.5 text-right font-mono">{getM(data, a, 'annual_vol').toFixed(2)}%</td>
-                    <td className="py-2.5 text-right font-mono">{(getM(data, a, 'max_drawdown') * 100).toFixed(2)}%</td>
-                  </tr>
+                    <td className={`py-2.5 text-right font-mono ${annRet >= 0 ? 'text-profit' : 'text-loss'}`}>
+                      {annRet >= 0 ? '+' : ''}{annRet.toFixed(2)}%
+                    </td>
+                    <td className="py-2.5 text-right font-mono text-text-secondary">{getM(data, a, 'annual_vol').toFixed(2)}%</td>
+                    <td className="py-2.5 text-right font-mono text-loss">{(getM(data, a, 'max_drawdown') * 100).toFixed(2)}%</td>
+                  </motion.tr>
                 )
               })}
             </tbody>
@@ -227,19 +305,28 @@ export default function RlAgent() {
       <Card className="mb-6">
         <div className="flex items-center justify-between mb-4">
           <h2 className="font-display font-bold text-lg text-secondary">Performance Charts</h2>
-          <div className="flex bg-bg-card rounded-lg border border-border-light p-0.5">
+          <div className="flex bg-bg-card rounded-lg border border-border-light p-0.5 relative">
             {([
               { key: 'rewards', label: 'Training Rewards' },
               { key: 'cumulative', label: 'Cumulative Returns' },
               { key: 'weights', label: 'Portfolio Weights' },
             ] as const).map(tab => (
-              <button key={tab.key} onClick={() => setActiveTab(tab.key)}
-                className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all ${
-                  activeTab === tab.key
-                    ? 'bg-primary text-white shadow-sm'
-                    : 'text-text-secondary hover:text-text'
-                }`}>
-                {tab.label}
+              <button
+                key={tab.key}
+                onClick={() => setActiveTab(tab.key)}
+                className="relative px-3 py-1.5 rounded-md text-xs font-medium z-10 transition-colors"
+                style={{ color: activeTab === tab.key ? '#fff' : undefined }}
+              >
+                {activeTab === tab.key && (
+                  <motion.span
+                    layoutId="chart-tab-pill"
+                    className="absolute inset-0 bg-primary rounded-md shadow-sm"
+                    transition={{ type: 'spring', stiffness: 340, damping: 28 }}
+                  />
+                )}
+                <span className={`relative z-10 ${activeTab === tab.key ? 'text-white' : 'text-text-secondary hover:text-text'}`}>
+                  {tab.label}
+                </span>
               </button>
             ))}
           </div>
@@ -383,39 +470,55 @@ export default function RlAgent() {
           <p className="text-xs text-text-secondary mb-3">
             Which stocks drive portfolio returns. Contribution = weight × stock return.
           </p>
-          <div className="space-y-1.5 max-h-[340px] overflow-y-auto">
-            {data.stock_contributions.map((s, i) => (
-              <motion.div key={s.ticker}
-                initial={{ opacity: 0, x: -15 }}
-                animate={{ opacity: 1, x: 0 }}
-                transition={{ delay: i * 0.04 }}
-                className="flex items-center gap-3 p-2.5 rounded-xl bg-bg-card hover:bg-primary-subtle/20 transition-colors"
-              >
-                <span className="w-6 text-center text-[10px] font-bold text-text-muted">{i + 1}</span>
-                <div className="w-3 h-3 rounded-full shrink-0" style={{ backgroundColor: SECTOR_COLORS[s.sector] || '#9CA3AF' }} />
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2">
-                    <span className="font-mono font-semibold text-sm">{s.ticker}</span>
-                    <span className="text-[10px] text-text-muted">{s.sector}</span>
-                  </div>
-                  <div className="flex items-center gap-2 text-[10px] mt-0.5">
-                    <span className="text-text-muted">Wt: {s.weight.toFixed(1)}%</span>
-                    <span className={s.cumulative_return >= 0 ? 'text-profit' : 'text-loss'}>
-                      Ret: {s.cumulative_return > 0 ? '+' : ''}{s.cumulative_return.toFixed(1)}%
-                    </span>
-                  </div>
-                </div>
-                <div className="text-right">
-                  <span className={`inline-flex items-center gap-0.5 font-mono text-sm font-bold ${
-                    s.return_contrib >= 0 ? 'text-profit' : 'text-loss'
-                  }`}>
-                    {s.return_contrib >= 0 ? <ArrowUpRight size={12} /> : <ArrowDownRight size={12} />}
-                    {s.return_contrib > 0 ? '+' : ''}{s.return_contrib.toFixed(2)}%
-                  </span>
-                </div>
-              </motion.div>
-            ))}
-          </div>
+          {(() => {
+            const maxContrib = Math.max(...data.stock_contributions.map(s => Math.abs(s.return_contrib)), 0.01);
+            return (
+              <div className="space-y-1.5 max-h-[340px] overflow-y-auto">
+                {data.stock_contributions.map((s, i) => {
+                  const barPct = (Math.abs(s.return_contrib) / maxContrib) * 100;
+                  return (
+                    <motion.div key={s.ticker}
+                      initial={{ opacity: 0, x: -15 }}
+                      animate={{ opacity: 1, x: 0 }}
+                      transition={{ delay: i * 0.04 }}
+                      className="relative flex items-center gap-3 p-2.5 rounded-xl bg-bg-card hover:bg-primary-subtle/20 transition-colors overflow-hidden"
+                    >
+                      {/* Contribution fill bar */}
+                      <motion.div
+                        initial={{ width: 0 }}
+                        animate={{ width: `${barPct}%` }}
+                        transition={{ delay: i * 0.04 + 0.3, duration: 0.6, ease: 'easeOut' }}
+                        className="absolute inset-y-0 left-0 opacity-[0.08] rounded-xl"
+                        style={{ background: s.return_contrib >= 0 ? '#16A34A' : '#DC2626' }}
+                      />
+                      <span className="w-6 text-center text-[10px] font-bold text-text-muted relative z-10">{i + 1}</span>
+                      <div className="w-3 h-3 rounded-full shrink-0 relative z-10" style={{ backgroundColor: SECTOR_COLORS[s.sector] || '#9CA3AF' }} />
+                      <div className="flex-1 min-w-0 relative z-10">
+                        <div className="flex items-center gap-2">
+                          <span className="font-mono font-semibold text-sm">{s.ticker}</span>
+                          <span className="text-[10px] text-text-muted">{s.sector}</span>
+                        </div>
+                        <div className="flex items-center gap-2 text-[10px] mt-0.5">
+                          <span className="text-text-muted">Wt: {s.weight.toFixed(1)}%</span>
+                          <span className={s.cumulative_return >= 0 ? 'text-profit' : 'text-loss'}>
+                            Ret: {s.cumulative_return > 0 ? '+' : ''}{s.cumulative_return.toFixed(1)}%
+                          </span>
+                        </div>
+                      </div>
+                      <div className="text-right relative z-10">
+                        <span className={`inline-flex items-center gap-0.5 font-mono text-sm font-bold ${
+                          s.return_contrib >= 0 ? 'text-profit' : 'text-loss'
+                        }`}>
+                          {s.return_contrib >= 0 ? <ArrowUpRight size={12} /> : <ArrowDownRight size={12} />}
+                          {s.return_contrib > 0 ? '+' : ''}{s.return_contrib.toFixed(2)}%
+                        </span>
+                      </div>
+                    </motion.div>
+                  );
+                })}
+              </div>
+            );
+          })()}
         </Card>
       </div>
 

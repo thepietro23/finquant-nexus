@@ -376,7 +376,7 @@ def evaluate_agent(model, env, n_episodes=5, deterministic=True):
 
 def compare_agents(ppo_model, sac_model, env, n_episodes=10,
                    td3_model=None, a2c_model=None, ddpg_model=None,
-                   ensemble_model=None):
+                   ensemble_model=None, finrl_model=None):
     """Compare all available RL agents by Sharpe ratio.
 
     Args:
@@ -385,6 +385,7 @@ def compare_agents(ppo_model, sac_model, env, n_episodes=10,
         env: Evaluation environment
         n_episodes: Episodes per agent
         td3_model, a2c_model, ddpg_model, ensemble_model: Optional additional agents
+        finrl_model: Optional FinRL baseline model for thesis comparison
 
     Returns:
         dict with per-algorithm metrics and overall winner
@@ -398,6 +399,8 @@ def compare_agents(ppo_model, sac_model, env, n_episodes=10,
         candidates['DDPG'] = ddpg_model
     if ensemble_model is not None:
         candidates['Ensemble'] = ensemble_model
+    if finrl_model is not None:
+        candidates['FinRL'] = finrl_model
 
     results = {}
     for name, model in candidates.items():
@@ -408,6 +411,110 @@ def compare_agents(ppo_model, sac_model, env, n_episodes=10,
     winner = max(results, key=lambda k: results[k]['mean_sharpe'])
     results['winner'] = winner.upper()
     return results
+
+
+# ---------------------------------------------------------------------------
+# FinRL Baseline
+# ---------------------------------------------------------------------------
+
+def create_finrl_agent(env, algorithm='PPO', device='auto', **kwargs):
+    """Create a FinRL DRLAgent-wrapped model for thesis baseline comparison.
+
+    FinRL's DRLAgent is a thin wrapper over SB3. This trains a vanilla PPO/SAC
+    without our custom T-GAT graph features — used as the external baseline.
+    Falls back to plain SB3 if FinRL is unavailable.
+
+    Args:
+        env: PortfolioEnv instance
+        algorithm: 'PPO', 'SAC', 'TD3', 'A2C', or 'DDPG'
+        device: 'auto', 'cpu', or 'cuda'
+
+    Returns:
+        SB3 model (usable with evaluate_agent / compare_agents)
+    """
+    cfg = get_config('rl')
+
+    if _FINRL_AVAILABLE:
+        algo_map = {
+            'PPO': PPO, 'SAC': SAC, 'TD3': TD3, 'A2C': A2C, 'DDPG': DDPG,
+        }
+        AlgoCls = algo_map.get(algorithm.upper(), PPO)
+        # DRLAgent.get_model builds the SB3 model; we pass our env directly
+        model = DRLAgent.get_model(
+            algorithm.lower(),
+            env,
+            model_kwargs={
+                'learning_rate': cfg.get('lr', 3e-4),
+                'batch_size': cfg.get('batch_size', 64),
+                'gamma': cfg.get('gamma', 0.99),
+                'device': device,
+                'verbose': 0,
+            },
+        )
+        logger.info(f'FinRL DRLAgent ({algorithm}) created via FinRL wrapper')
+    else:
+        # SB3 direct fallback — functionally identical
+        algo_map = {
+            'PPO': PPO, 'SAC': SAC, 'TD3': TD3, 'A2C': A2C, 'DDPG': DDPG,
+        }
+        AlgoCls = algo_map.get(algorithm.upper(), PPO)
+        model = AlgoCls(
+            'MlpPolicy', env,
+            learning_rate=cfg.get('lr', 3e-4),
+            batch_size=cfg.get('batch_size', 64),
+            gamma=cfg.get('gamma', 0.99),
+            device=device,
+            verbose=0,
+            **kwargs,
+        )
+        logger.info(f'FinRL baseline ({algorithm}) via SB3 fallback (finrl not installed)')
+
+    return model
+
+
+def run_finrl_baseline(env, total_timesteps=None, algorithm='PPO', device='auto'):
+    """Train and evaluate FinRL baseline. Returns metrics for thesis comparison table.
+
+    This is the 12th baseline in the comparison table:
+      Our Ensemble > PPO > SAC > ... > FinRL > Equal-Weight
+
+    Args:
+        env: PortfolioEnv for training
+        total_timesteps: Training steps (default from config)
+        algorithm: Which algorithm to use as FinRL baseline (default PPO)
+        device: compute device
+
+    Returns:
+        dict: {sharpe, return, max_drawdown, algorithm, finrl_available}
+    """
+    cfg = get_config('rl')
+    if total_timesteps is None:
+        total_timesteps = cfg.get('total_timesteps', 500000)
+
+    model = create_finrl_agent(env, algorithm=algorithm, device=device)
+
+    logger.info(f'Training FinRL baseline ({algorithm}) for {total_timesteps:,} steps...')
+    if _FINRL_AVAILABLE:
+        model = DRLAgent.train_model(model, tb_log_name='finrl_baseline',
+                                     total_timesteps=total_timesteps)
+    else:
+        model.learn(total_timesteps=total_timesteps)
+
+    metrics = evaluate_agent(model, env, n_episodes=5)
+    logger.info(
+        f'FinRL baseline result: return={metrics["mean_return"]:.2%}, '
+        f'sharpe={metrics["mean_sharpe"]:.2f}, '
+        f'max_dd={metrics["mean_max_dd"]:.2%}'
+    )
+
+    return {
+        'sharpe': metrics['mean_sharpe'],
+        'return': metrics['mean_return'],
+        'max_drawdown': metrics['mean_max_dd'],
+        'algorithm': algorithm,
+        'finrl_available': _FINRL_AVAILABLE,
+        'model': model,
+    }
 
 
 # ---------------------------------------------------------------------------

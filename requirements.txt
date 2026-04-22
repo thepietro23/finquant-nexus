@@ -25,7 +25,10 @@ tokenizers>=0.15
 # --- RL ---
 gymnasium>=0.29
 stable-baselines3>=2.2
-finrl>=3.0              # DRLAgent wrapper for TD3/A2C/DDPG; fallback to SB3 if gymnasium conflict
+finrl>=3.0              # DRLAgent wrapper — thesis baseline #12; requires alpaca-trade-api, exchange-calendars, stockstats
+alpaca-trade-api>=3.2   # Required by finrl
+exchange-calendars>=4.0 # Required by finrl
+stockstats>=0.6         # Required by finrl
 
 # --- GAN (uses PyTorch directly) ---
 

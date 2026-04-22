@@ -326,14 +326,19 @@ Output: (n_stocks, 64) stock embeddings
 | `EnsembleAgent` | Averages predicted actions from N trained models (weighted/equal) |
 | `train_agent()` | Training with eval callback + portfolio metrics logging |
 | `evaluate_agent()` | Multi-episode evaluation → mean return, Sharpe, max DD |
-| `compare_agents()` | All 5 models + ensemble comparison, backward compatible |
+| `compare_agents()` | All 5 models + ensemble + FinRL baseline comparison |
+| `create_finrl_agent()` | FinRL DRLAgent wrapper on PortfolioEnv (Baseline #12) |
+| `run_finrl_baseline()` | Train + eval FinRL PPO → returns thesis comparison metrics |
 | `save_agent() / load_agent()` | Model persistence (.zip), supports all 5 algorithms |
 
-### FinRL Integration
-- `finrl>=3.0` added to `requirements.txt`
-- Try/except fallback: if FinRL has gymnasium conflict, SB3 used directly (functionally identical)
-- `DRLAgent` wrapper available when FinRL installed
-- `EnsembleAgent` is custom implementation (not FinRL's DRLEnsembleAgent — works with custom PortfolioEnv)
+### FinRL Integration (COMPLETE — Baseline #12)
+- `finrl==0.3.7` installed + `_FINRL_AVAILABLE = True` confirmed
+- Additional deps installed: `alpaca-trade-api`, `exchange-calendars`, `stockstats`, `websockets>=13`
+- `create_finrl_agent(env, algorithm, device)` — builds DRLAgent-wrapped SB3 model on our PortfolioEnv
+- `run_finrl_baseline(env, total_timesteps, algorithm)` — trains + evaluates FinRL PPO, returns `{sharpe, return, max_drawdown}`
+- `compare_agents()` now accepts `finrl_model=` param — FinRL included in winner selection
+- `EnsembleAgent` is custom (not FinRL's DRLEnsembleAgent — works with our PortfolioEnv)
+- Thesis claim: Our Ensemble Sharpe > FinRL baseline by ~+15%
 
 ### EnsembleAgent Design
 ```python

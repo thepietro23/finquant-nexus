@@ -31,9 +31,37 @@ from src.api.schemas import (
     FLSummaryResponse, FLRoundPoint, FLClientInfo, FLFairnessItem,
     GNNSummaryResponse, GNNNode, GNNEdge, TopConnection, SectorConnectivity,
     NewsSentimentResponse, NewsItem, SectorSentiment, SentimentPortfolioHolding,
+    GrowthRequest, GrowthResponse, GrowthPoint,
 )
 
 logger = get_logger('api')
+
+# ============================================================
+# CSV CACHE — loaded once at first access, reused for all requests
+# ============================================================
+
+import os as _os
+import pandas as _pd
+
+_PRICE_DF: '_pd.DataFrame | None' = None
+_NIFTY_DF: '_pd.DataFrame | None' = None
+
+
+def _get_price_df() -> '_pd.DataFrame':
+    global _PRICE_DF
+    if _PRICE_DF is None:
+        csv_path = _os.path.join(_os.path.dirname(__file__), '..', '..', 'data', 'all_close_prices.csv')
+        _PRICE_DF = _pd.read_csv(csv_path, parse_dates=['Date'], index_col='Date').dropna(axis=1, how='all').ffill()
+    return _PRICE_DF
+
+
+def _get_nifty_df() -> '_pd.DataFrame | None':
+    global _NIFTY_DF
+    if _NIFTY_DF is None:
+        nifty_path = _os.path.join(_os.path.dirname(__file__), '..', '..', 'data', 'NIFTY50_INDEX.csv')
+        if _os.path.exists(nifty_path):
+            _NIFTY_DF = _pd.read_csv(nifty_path, parse_dates=['Date'], index_col='Date')
+    return _NIFTY_DF
 
 
 # ============================================================
@@ -115,15 +143,16 @@ def stock_detail(ticker: str):
     Reads real prices from all_close_prices.csv.
     Returns current price, 52-week range, returns, volatility, Sharpe, sparkline.
     """
-    import os
-    import pandas as pd
     from src.utils.metrics import sharpe_ratio, annualized_volatility, max_drawdown
-    from src.data.stocks import get_sector
+    from src.data.stocks import get_sector, get_all_tickers
+
+    # Validate ticker before touching CSV
+    known = {t.replace('.NS', '').upper() for t in get_all_tickers()}
+    if ticker.replace('.NS', '').upper() not in known:
+        raise HTTPException(status_code=404, detail=f'Unknown ticker: {ticker}')
 
     try:
-        csv_path = os.path.join(os.path.dirname(__file__), '..', '..', 'data', 'all_close_prices.csv')
-        df = pd.read_csv(csv_path, parse_dates=['Date'], index_col='Date')
-        df = df.dropna(axis=1, how='all').ffill()
+        df = _get_price_df()
 
         # Try exact match, then with .NS suffix
         if ticker in df.columns:
@@ -363,8 +392,6 @@ def portfolio_summary():
     Equal-weight portfolio across all available stocks.
     Evaluation period: last 252 trading days (1 year).
     """
-    import os
-    import pandas as pd
     from src.utils.metrics import (
         sharpe_ratio, sortino_ratio, annualized_return,
         annualized_volatility, max_drawdown,
@@ -372,10 +399,7 @@ def portfolio_summary():
     from src.data.stocks import get_sector
 
     try:
-        csv_path = os.path.join(os.path.dirname(__file__), '..', '..', 'data', 'all_close_prices.csv')
-        df = pd.read_csv(csv_path, parse_dates=['Date'], index_col='Date')
-        df = df.dropna(axis=1, how='all')  # drop columns with all NaN
-        df = df.ffill()  # forward-fill gaps
+        df = _get_price_df()
 
         # Use last 252 trading days for evaluation
         eval_days = min(252, len(df))
@@ -391,9 +415,8 @@ def portfolio_summary():
         portfolio_daily = daily_returns.values @ weights
 
         # NIFTY 50 index (if available, else equal-weight benchmark)
-        nifty_path = os.path.join(os.path.dirname(__file__), '..', '..', 'data', 'NIFTY50_INDEX.csv')
-        if os.path.exists(nifty_path):
-            nifty_df = pd.read_csv(nifty_path, parse_dates=['Date'], index_col='Date')
+        nifty_df = _get_nifty_df()
+        if nifty_df is not None:
             col = 'Adj Close' if 'Adj Close' in nifty_df.columns else nifty_df.columns[0]
             nifty_prices = nifty_df[col].reindex(df_eval.index).ffill().bfill()
             nifty_returns = nifty_prices.pct_change().dropna().values
@@ -489,8 +512,6 @@ def rl_summary():
     Uses actual daily returns to simulate PPO/SAC episode rewards
     with real Sharpe ratios and drawdowns. Deterministic (seed=42).
     """
-    import os
-    import pandas as pd
     from collections import defaultdict
     from src.utils.metrics import (
         sharpe_ratio, sortino_ratio, annualized_return,
@@ -503,9 +524,7 @@ def rl_summary():
         rl_cfg = cfg.get('rl', {})
         rng = np.random.RandomState(42)
 
-        csv_path = os.path.join(os.path.dirname(__file__), '..', '..', 'data', 'all_close_prices.csv')
-        df = pd.read_csv(csv_path, parse_dates=['Date'], index_col='Date')
-        df = df.dropna(axis=1, how='all').ffill()
+        df = _get_price_df()
         tickers = df.columns.tolist()
         n_stocks = len(tickers)
 
@@ -521,10 +540,13 @@ def rl_summary():
         top5_tickers = []  # populated after first few episodes
 
         def _clip_norm(w, max_pos=0.20):
-            """Clip weights to max_pos and renormalize to sum=1."""
             w = np.clip(w, 0, max_pos)
             s = w.sum()
             return w / s if s > 0 else np.ones_like(w) / len(w)
+
+        def _safe_exp(scores, scale):
+            """exp(scores*scale) with overflow protection (clips to [-10, 10])."""
+            return np.exp(np.clip(scores * scale, -10.0, 10.0))
 
         # Simulate 6-algorithm episode rewards from real returns
         reward_curve = []
@@ -541,7 +563,7 @@ def rl_summary():
 
             # PPO — blends equal-weight with momentum as training progresses
             ppo_w = _clip_norm((1 - progress * 0.7) * (np.ones(n_stocks) / n_stocks)
-                                + progress * 0.7 * _clip_norm(np.exp(momentum_scores * 100)))
+                                + progress * 0.7 * _clip_norm(_safe_exp(momentum_scores, 100)))
             ppo_reward = float(sharpe_ratio(ep_returns @ ppo_w))
             ppo_rewards_all.append(ppo_reward)
 
@@ -551,12 +573,12 @@ def rl_summary():
             sac_rewards_all.append(sac_reward)
 
             # TD3 — aggressive momentum (higher exponent), delayed updates = less noise
-            td3_w = _clip_norm(np.exp(momentum_scores * 120))
+            td3_w = _clip_norm(_safe_exp(momentum_scores, 120))
             td3_reward = float(sharpe_ratio(ep_returns @ td3_w))
             td3_rewards_all.append(td3_reward)
 
             # A2C — contrarian / conservative (short rollouts, mean-reverting)
-            a2c_w = _clip_norm(np.exp(-momentum_scores * 30), max_pos=0.15)
+            a2c_w = _clip_norm(_safe_exp(-momentum_scores, 30), max_pos=0.15)
             a2c_reward = float(sharpe_ratio(ep_returns @ a2c_w))
             a2c_rewards_all.append(a2c_reward)
 
@@ -601,10 +623,10 @@ def rl_summary():
         val_returns = val_df.pct_change().dropna().values
         momentum = np.mean(val_returns[-60:], axis=0) if val_returns.shape[0] >= 60 else np.mean(val_returns, axis=0)
 
-        final_ppo_w  = _clip_norm(np.exp(momentum * 150))
-        final_sac_w  = _clip_norm(np.exp(momentum * 120))
-        final_td3_w  = _clip_norm(np.exp(momentum * 180))
-        final_a2c_w  = _clip_norm(np.exp(-momentum * 30), max_pos=0.15)
+        final_ppo_w  = _clip_norm(_safe_exp(momentum, 150))
+        final_sac_w  = _clip_norm(_safe_exp(momentum, 120))
+        final_td3_w  = _clip_norm(_safe_exp(momentum, 180))
+        final_a2c_w  = _clip_norm(_safe_exp(-momentum, 30), max_pos=0.15)
         final_ddpg_w = _clip_norm(0.5 * final_ppo_w + 0.5 * np.ones(n_stocks) / n_stocks)
         final_ens_w  = _clip_norm((final_ppo_w + final_sac_w + final_td3_w + final_a2c_w + final_ddpg_w) / 5.0)
 
@@ -792,8 +814,6 @@ def nas_summary():
     Simulates DARTS alpha convergence using real return statistics.
     Shows which operations are most useful for financial time series.
     """
-    import os
-    import pandas as pd
     from src.utils.metrics import sharpe_ratio, sortino_ratio, max_drawdown
 
     try:
@@ -802,9 +822,7 @@ def nas_summary():
         rng = np.random.RandomState(42)
         search_epochs = nas_cfg.get('darts_epochs', 50)
 
-        csv_path = os.path.join(os.path.dirname(__file__), '..', '..', 'data', 'all_close_prices.csv')
-        df = pd.read_csv(csv_path, parse_dates=['Date'], index_col='Date')
-        df = df.dropna(axis=1, how='all').ffill()
+        df = _get_price_df()
 
         # Real stock statistics drive which ops converge
         train_df = df[df.index <= '2021-12-31']
@@ -859,7 +877,7 @@ def nas_summary():
 
         # NAS-optimized: momentum-weighted (simulates learned architecture advantage)
         momentum = np.mean(val_returns[-60:], axis=0)
-        nas_w = np.exp(momentum * 120)
+        nas_w = np.exp(np.clip(momentum * 120, -10.0, 10.0))
         nas_w = np.clip(nas_w / nas_w.sum(), 0, 0.15)
         nas_w = nas_w / nas_w.sum()
         nas_port = val_returns @ nas_w
@@ -903,8 +921,6 @@ def fl_summary():
     Splits stocks by sector into 4 clients, computes real per-client
     loss convergence for FedProx vs FedAvg.
     """
-    import os
-    import pandas as pd
     from src.utils.metrics import sharpe_ratio
     from src.data.stocks import get_sector
 
@@ -914,9 +930,7 @@ def fl_summary():
         n_rounds = fl_cfg.get('rounds', 50)
         rng = np.random.RandomState(42)
 
-        csv_path = os.path.join(os.path.dirname(__file__), '..', '..', 'data', 'all_close_prices.csv')
-        df = pd.read_csv(csv_path, parse_dates=['Date'], index_col='Date')
-        df = df.dropna(axis=1, how='all').ffill()
+        df = _get_price_df()
         tickers = df.columns.tolist()
 
         # Split stocks into 4 clients by sector (real sector mapping)
@@ -1049,8 +1063,6 @@ def gnn_summary():
     - Correlation edges from 60-day rolling correlations (|corr| > 0.6)
     - Attention matrix derived from correlation strengths
     """
-    import os
-    import pandas as pd
     from collections import defaultdict
     from src.data.stocks import (
         get_all_tickers, get_sector, get_sector_pairs,
@@ -1059,9 +1071,7 @@ def gnn_summary():
     from src.utils.metrics import sharpe_ratio
 
     try:
-        csv_path = os.path.join(os.path.dirname(__file__), '..', '..', 'data', 'all_close_prices.csv')
-        df = pd.read_csv(csv_path, parse_dates=['Date'], index_col='Date')
-        df = df.dropna(axis=1, how='all').ffill()
+        df = _get_price_df()
         tickers = df.columns.tolist()
         n_stocks = len(tickers)
 
@@ -1433,4 +1443,114 @@ def news_sentiment():
 
     except Exception as e:
         logger.error(f'News sentiment error: {traceback.format_exc()}')
+
+
+# ============================================================
+# PORTFOLIO GROWTH — time-based investment simulator
+# ============================================================
+
+@app.post("/api/portfolio-growth", response_model=GrowthResponse)
+def portfolio_growth(req: GrowthRequest):
+    """Simulate ₹ growth of equal-weight NIFTY 50 portfolio from a given start date.
+
+    Compares three strategies from start_date to latest available data:
+      1. Our equal-weight NIFTY 50 portfolio
+      2. NIFTY 50 index (buy-and-hold)
+      3. Fixed Deposit at 7% annual rate (risk-free baseline)
+
+    Returns daily series so the frontend can draw a growth chart.
+    """
+    try:
+        df = _get_price_df()
+
+        # validate + clamp start date
+        try:
+            start_dt = pd.Timestamp(req.start_date)
+        except Exception:
+            raise HTTPException(status_code=422, detail='Invalid start_date format. Use YYYY-MM-DD.')
+
+        earliest = df.index[0]
+        latest   = df.index[-1]
+        if start_dt < earliest:
+            start_dt = earliest
+        if start_dt >= latest:
+            raise HTTPException(status_code=422, detail=f'start_date must be before {latest.date()}')
+
+        # slice from start_date onward
+        df_slice = df[df.index >= start_dt]
+        if len(df_slice) < 2:
+            raise HTTPException(status_code=422, detail='Not enough data from that start date.')
+
+        tickers = df_slice.columns.tolist()
+        n = len(tickers)
+        weights = np.ones(n) / n
+
+        daily_ret = df_slice.pct_change().fillna(0).values  # shape (days, stocks)
+        port_daily = daily_ret @ weights                     # equal-weight portfolio
+
+        # NIFTY index
+        nifty_df = _get_nifty_df()
+        if nifty_df is not None:
+            col = 'Adj Close' if 'Adj Close' in nifty_df.columns else nifty_df.columns[0]
+            nifty_prices = nifty_df[col].reindex(df_slice.index).ffill().bfill()
+            nifty_daily = nifty_prices.pct_change().fillna(0).values
+        else:
+            nifty_daily = port_daily * 0.85   # fallback approximation
+
+        # FD: 7% annual → daily compounding
+        fd_daily_rate = (1 + 0.07) ** (1 / 252) - 1
+        fd_daily = np.full(len(port_daily), fd_daily_rate)
+
+        # cumulative value series (starting from req.amount)
+        def cum_series(daily_r):
+            vals = [req.amount]
+            for r in daily_r[1:]:            # day 0 = invested, day 1+ = returns
+                vals.append(vals[-1] * (1 + r))
+            return np.array(vals)
+
+        port_vals  = cum_series(port_daily)
+        nifty_vals = cum_series(nifty_daily)
+        fd_vals    = cum_series(fd_daily)
+
+        dates = df_slice.index
+
+        # downsample to weekly points so response stays lean (max ~500 pts for 10yr)
+        step = max(1, len(dates) // 500)
+        idx  = list(range(0, len(dates), step))
+        if idx[-1] != len(dates) - 1:
+            idx.append(len(dates) - 1)
+
+        series = [
+            GrowthPoint(
+                date=dates[i].strftime('%Y-%m-%d'),
+                portfolio_value=round(float(port_vals[i]), 2),
+                nifty_value=round(float(nifty_vals[i]), 2),
+                fd_value=round(float(fd_vals[i]), 2),
+            )
+            for i in idx
+        ]
+
+        def pct(final): return round((final / req.amount - 1) * 100, 2)
+
+        return GrowthResponse(
+            amount=req.amount,
+            start_date=dates[0].strftime('%Y-%m-%d'),
+            end_date=dates[-1].strftime('%Y-%m-%d'),
+            n_days=len(dates),
+            final_portfolio=round(float(port_vals[-1]), 2),
+            final_nifty=round(float(nifty_vals[-1]), 2),
+            final_fd=round(float(fd_vals[-1]), 2),
+            portfolio_return_pct=pct(port_vals[-1]),
+            nifty_return_pct=pct(nifty_vals[-1]),
+            fd_return_pct=pct(fd_vals[-1]),
+            portfolio_profit=round(float(port_vals[-1] - req.amount), 2),
+            nifty_profit=round(float(nifty_vals[-1] - req.amount), 2),
+            fd_profit=round(float(fd_vals[-1] - req.amount), 2),
+            series=series,
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f'Portfolio growth error: {traceback.format_exc()}')
         raise HTTPException(status_code=500, detail=str(e))

@@ -3,6 +3,21 @@ import { useEffect, useRef, useState } from 'react';
 import { fadeSlideUp } from '../../lib/animations';
 import { valueBg, formatPct } from '../../lib/formatters';
 import SparkLine from '../charts/SparkLine';
+import { MetricCardSkeleton } from './Skeleton';
+
+export type MetricBadgeVariant = 'profit' | 'loss' | 'warning' | 'neutral';
+
+export interface MetricBadge {
+  label: string;
+  variant: MetricBadgeVariant;
+}
+
+const badgeClasses: Record<MetricBadgeVariant, string> = {
+  profit:  'bg-profit-light text-profit border border-profit/20',
+  loss:    'bg-loss-light text-loss border border-loss/20',
+  warning: 'bg-amber-50 text-amber-600 border border-amber-200',
+  neutral: 'bg-bg-card text-text-muted border border-border',
+};
 
 interface MetricCardProps {
   title: string;
@@ -15,6 +30,8 @@ interface MetricCardProps {
   icon?: React.ReactNode;
   onClick?: () => void;
   active?: boolean;
+  loading?: boolean;
+  badge?: MetricBadge;
 }
 
 function useAnimatedNumber(end: number, decimals: number, duration = 1200) {
@@ -47,9 +64,11 @@ function useAnimatedNumber(end: number, decimals: number, duration = 1200) {
 
 export default function MetricCard({
   title, value, decimals = 2, prefix = '', suffix = '',
-  change, sparkData, icon, onClick, active,
+  change, sparkData, icon, onClick, active, loading, badge,
 }: MetricCardProps) {
   const animated = useAnimatedNumber(value, decimals);
+
+  if (loading) return <MetricCardSkeleton />;
 
   return (
     <motion.div
@@ -58,29 +77,52 @@ export default function MetricCard({
       whileInView="visible"
       viewport={{ once: true }}
       onClick={onClick}
-      className={`bg-white rounded-2xl border p-5 transition-all duration-300
-        hover:shadow-[0_10px_30px_rgba(193,95,60,0.12)] hover:-translate-y-1 hover:bg-[#FFFBF8]
-        ${active ? 'border-primary border-l-[3px] shadow-[0_10px_30px_rgba(193,95,60,0.12)] bg-[#FFFBF8]' : 'border-border hover:border-l-[3px] hover:border-l-primary'}
+      whileHover={{ y: -4, boxShadow: '0 12px 32px rgba(193,95,60,0.14)' }}
+      whileTap={onClick ? { scale: 0.97, y: 0 } : {}}
+      transition={{ type: 'spring', stiffness: 300, damping: 22 }}
+      className={`bg-white rounded-2xl border p-5 relative overflow-hidden
+        ${active ? 'border-primary border-l-[3px] shadow-[0_10px_30px_rgba(193,95,60,0.12)] bg-[#FFFBF8]' : 'border-border'}
         ${onClick ? 'cursor-pointer' : ''}`}
     >
-      <div className="flex items-center justify-between mb-3">
+      {/* Subtle gradient shine */}
+      <div className="absolute inset-0 bg-gradient-to-br from-primary/[0.03] to-transparent pointer-events-none" />
+
+      <div className="flex items-center justify-between mb-2 relative">
         <span className="text-sm font-medium text-text-secondary">{title}</span>
         {icon && <span className="text-text-muted">{icon}</span>}
       </div>
 
-      <div className="flex items-end gap-3 mb-3">
+      <div className="flex items-end gap-3 mb-2 relative">
         <span className="text-3xl font-bold font-mono text-text">
           {prefix}{animated}{suffix}
         </span>
         {change !== undefined && (
-          <span className={`text-sm font-medium px-2 py-0.5 rounded-full ${valueBg(change)}`}>
+          <motion.span
+            initial={{ opacity: 0, x: -8 }}
+            animate={{ opacity: 1, x: 0 }}
+            transition={{ delay: 0.3 }}
+            className={`text-sm font-medium px-2 py-0.5 rounded-full ${valueBg(change)}`}
+          >
             {formatPct(change)}
-          </span>
+          </motion.span>
         )}
       </div>
 
+      {badge && badge.label && (
+        <motion.div
+          initial={{ opacity: 0, scale: 0.85 }}
+          animate={{ opacity: 1, scale: 1 }}
+          transition={{ delay: 0.5, type: 'spring', stiffness: 260, damping: 20 }}
+          className="mb-2"
+        >
+          <span className={`text-[10px] font-bold tracking-widest px-2 py-0.5 rounded-full ${badgeClasses[badge.variant]}`}>
+            {badge.label}
+          </span>
+        </motion.div>
+      )}
+
       {sparkData && sparkData.length > 0 && (
-        <div className="h-10">
+        <div className="h-10 relative">
           <SparkLine data={sparkData} />
         </div>
       )}
