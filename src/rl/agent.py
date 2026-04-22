@@ -12,7 +12,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from stable_baselines3 import PPO, SAC
+from stable_baselines3 import PPO, SAC, TD3, A2C, DDPG
 from stable_baselines3.common.callbacks import (
     BaseCallback,
     EvalCallback,
@@ -20,11 +20,19 @@ from stable_baselines3.common.callbacks import (
 )
 from stable_baselines3.common.vec_env import DummyVecEnv
 
+try:
+    from finrl.agents.stablebaselines3.models import DRLAgent
+    _FINRL_AVAILABLE = True
+except ImportError:
+    _FINRL_AVAILABLE = False
+
 from src.utils.config import get_config
 from src.utils.logger import get_logger
 from src.utils.metrics import sharpe_ratio, max_drawdown
 
 logger = get_logger('rl_agent')
+if not _FINRL_AVAILABLE:
+    logger.warning('FinRL not available; using SB3 directly for TD3/A2C/DDPG (functionally identical)')
 
 
 # ---------------------------------------------------------------------------
@@ -143,6 +151,114 @@ def create_sac_agent(env, device='auto', **kwargs):
     return model
 
 
+def create_td3_agent(env, device='auto', **kwargs):
+    """Create TD3 agent (Twin Delayed DDPG — off-policy, continuous actions).
+
+    TD3 uses delayed policy updates and target policy smoothing to reduce
+    overestimation bias. More stable than vanilla DDPG.
+    """
+    cfg = get_config('rl').get('td3', {})
+    policy_kwargs = kwargs.pop('policy_kwargs', {'net_arch': [128, 64]})
+    params = {
+        'policy': 'MlpPolicy',
+        'env': env,
+        'learning_rate': cfg.get('lr', 0.0003),
+        'buffer_size': cfg.get('buffer_size', 100000),
+        'batch_size': cfg.get('batch_size', 256),
+        'tau': cfg.get('tau', 0.005),
+        'policy_delay': cfg.get('policy_delay', 2),
+        'target_policy_noise': cfg.get('target_policy_noise', 0.2),
+        'policy_kwargs': policy_kwargs,
+        'device': device,
+        'verbose': 0,
+    }
+    params.update(kwargs)
+    model = TD3(**params)
+    n_params = sum(p.numel() for p in model.policy.parameters())
+    logger.info(f'TD3 agent created: {n_params:,} parameters, device={model.device}')
+    return model
+
+
+def create_a2c_agent(env, device='auto', **kwargs):
+    """Create A2C agent (Advantage Actor-Critic — on-policy, faster convergence).
+
+    A2C uses shorter rollouts (n_steps=5) vs PPO's 2048, making it faster
+    per update but noisier. Good for quick exploration.
+    """
+    cfg = get_config('rl').get('a2c', {})
+    policy_kwargs = kwargs.pop('policy_kwargs', {'net_arch': dict(pi=[128, 64], vf=[128, 64])})
+    params = {
+        'policy': 'MlpPolicy',
+        'env': env,
+        'learning_rate': cfg.get('lr', 0.0007),
+        'n_steps': cfg.get('n_steps', 5),
+        'gamma': get_config('rl').get('gamma', 0.99),
+        'ent_coef': cfg.get('ent_coef', 0.01),
+        'policy_kwargs': policy_kwargs,
+        'device': device,
+        'verbose': 0,
+    }
+    params.update(kwargs)
+    model = A2C(**params)
+    n_params = sum(p.numel() for p in model.policy.parameters())
+    logger.info(f'A2C agent created: {n_params:,} parameters, device={model.device}')
+    return model
+
+
+def create_ddpg_agent(env, device='auto', **kwargs):
+    """Create DDPG agent (Deep Deterministic Policy Gradient — off-policy).
+
+    Deterministic policy gradient without entropy regularization.
+    More sensitive to hyperparameters than SAC but simpler objective.
+    """
+    cfg = get_config('rl').get('ddpg', {})
+    policy_kwargs = kwargs.pop('policy_kwargs', {'net_arch': [128, 64]})
+    params = {
+        'policy': 'MlpPolicy',
+        'env': env,
+        'learning_rate': cfg.get('lr', 0.001),
+        'buffer_size': cfg.get('buffer_size', 100000),
+        'batch_size': cfg.get('batch_size', 256),
+        'tau': cfg.get('tau', 0.005),
+        'gamma': get_config('rl').get('gamma', 0.99),
+        'policy_kwargs': policy_kwargs,
+        'device': device,
+        'verbose': 0,
+    }
+    params.update(kwargs)
+    model = DDPG(**params)
+    n_params = sum(p.numel() for p in model.policy.parameters())
+    logger.info(f'DDPG agent created: {n_params:,} parameters, device={model.device}')
+    return model
+
+
+class EnsembleAgent:
+    """Averages predicted portfolio weights from multiple trained RL models.
+
+    Reduces single-model variance by combining predictions. Acts as a
+    meta-policy: each constituent model votes on the portfolio allocation.
+
+    Args:
+        models: List of trained SB3 models (PPO, SAC, TD3, A2C, DDPG).
+        weights: Per-model voting weights (default: equal weight).
+    """
+
+    def __init__(self, models: list, weights=None):
+        self.models = models
+        self.weights = weights or [1.0 / len(models)] * len(models)
+        logger.info(f'EnsembleAgent: {len(models)} models, weights={[round(w, 3) for w in self.weights]}')
+
+    def predict(self, obs, deterministic=True):
+        actions = [m.predict(obs, deterministic=deterministic)[0] for m in self.models]
+        averaged = np.average(np.stack(actions, axis=0), axis=0, weights=self.weights)
+        if averaged.sum() > 0:
+            averaged = averaged / averaged.sum()
+        return averaged, None
+
+    def __repr__(self):
+        return f'EnsembleAgent(n_models={len(self.models)})'
+
+
 # ---------------------------------------------------------------------------
 # Training
 # ---------------------------------------------------------------------------
@@ -258,35 +374,40 @@ def evaluate_agent(model, env, n_episodes=5, deterministic=True):
     }
 
 
-def compare_agents(ppo_model, sac_model, env, n_episodes=10):
-    """Compare PPO vs SAC performance.
+def compare_agents(ppo_model, sac_model, env, n_episodes=10,
+                   td3_model=None, a2c_model=None, ddpg_model=None,
+                   ensemble_model=None):
+    """Compare all available RL agents by Sharpe ratio.
 
     Args:
-        ppo_model: Trained PPO model
-        sac_model: Trained SAC model
+        ppo_model: Trained PPO model (required)
+        sac_model: Trained SAC model (required)
         env: Evaluation environment
         n_episodes: Episodes per agent
+        td3_model, a2c_model, ddpg_model, ensemble_model: Optional additional agents
 
     Returns:
-        dict with comparison results
+        dict with per-algorithm metrics and overall winner
     """
-    ppo_metrics = evaluate_agent(ppo_model, env, n_episodes)
-    sac_metrics = evaluate_agent(sac_model, env, n_episodes)
+    candidates = {'PPO': ppo_model, 'SAC': sac_model}
+    if td3_model is not None:
+        candidates['TD3'] = td3_model
+    if a2c_model is not None:
+        candidates['A2C'] = a2c_model
+    if ddpg_model is not None:
+        candidates['DDPG'] = ddpg_model
+    if ensemble_model is not None:
+        candidates['Ensemble'] = ensemble_model
 
-    logger.info(
-        f'PPO: return={ppo_metrics["mean_return"]:.2%}, '
-        f'sharpe={ppo_metrics["mean_sharpe"]:.2f}'
-    )
-    logger.info(
-        f'SAC: return={sac_metrics["mean_return"]:.2%}, '
-        f'sharpe={sac_metrics["mean_sharpe"]:.2f}'
-    )
+    results = {}
+    for name, model in candidates.items():
+        metrics = evaluate_agent(model, env, n_episodes)
+        results[name.lower()] = metrics
+        logger.info(f'{name}: return={metrics["mean_return"]:.2%}, sharpe={metrics["mean_sharpe"]:.2f}')
 
-    return {
-        'ppo': ppo_metrics,
-        'sac': sac_metrics,
-        'winner': 'PPO' if ppo_metrics['mean_sharpe'] > sac_metrics['mean_sharpe'] else 'SAC',
-    }
+    winner = max(results, key=lambda k: results[k]['mean_sharpe'])
+    results['winner'] = winner.upper()
+    return results
 
 
 # ---------------------------------------------------------------------------
@@ -311,7 +432,8 @@ def load_agent(path, env=None, algorithm='PPO'):
     Returns:
         Loaded model
     """
-    cls = PPO if algorithm.upper() == 'PPO' else SAC
+    algo_map = {'PPO': PPO, 'SAC': SAC, 'TD3': TD3, 'A2C': A2C, 'DDPG': DDPG}
+    cls = algo_map.get(algorithm.upper(), PPO)
     model = cls.load(path, env=env)
     logger.info(f'{algorithm} agent loaded from {path}')
     return model

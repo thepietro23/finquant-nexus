@@ -95,6 +95,29 @@ rl:
     tau: 0.005
     ent_coef: 'auto'
 
+  td3:
+    lr: 0.0003
+    buffer_size: 100000
+    batch_size: 256
+    tau: 0.005
+    policy_delay: 2
+    target_policy_noise: 0.2
+
+  a2c:
+    lr: 0.0007
+    n_steps: 5
+    ent_coef: 0.01
+
+  ddpg:
+    lr: 0.001
+    buffer_size: 100000
+    batch_size: 256
+    tau: 0.005
+
+  ensemble:
+    rebalance_window: 63   # ~3 months
+    top_k: 3               # average top-3 models by recent Sharpe
+
 # --- GAN ---
 gan:
   seq_length: 128

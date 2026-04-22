@@ -12,6 +12,7 @@ Pipeline:
 """
 
 import os
+import threading
 
 import numpy as np
 import pandas as pd
@@ -24,8 +25,9 @@ from src.utils.seed import set_seed
 
 logger = get_logger('finbert')
 
-# Global model cache (singleton pattern — load once, use everywhere)
+# Thread-safe global model cache (singleton pattern — load once, use everywhere)
 _MODEL_CACHE = {}
+_MODEL_CACHE_LOCK = threading.Lock()
 
 
 def _get_model_path():
@@ -47,19 +49,12 @@ def _get_model_path():
     return model_name
 
 
-def _patch_torch_load():
-    """Patch torch.load for torch 2.5 compatibility with .bin model files.
+def _safe_torch_load(path, map_location=None):
+    """Load a model file with torch 2.5 compatibility (weights_only=False).
 
-    torch 2.5 defaults to weights_only=True which fails with some model files.
-    This patch sets weights_only=False for model loading only.
+    Uses weights_only=False only for this call, avoiding a global monkey-patch.
     """
-    if not hasattr(torch, '_finbert_patched'):
-        _orig = torch.load
-        def _safe_load(*args, **kwargs):
-            kwargs['weights_only'] = False
-            return _orig(*args, **kwargs)
-        torch.load = _safe_load
-        torch._finbert_patched = True
+    return torch.load(path, map_location=map_location, weights_only=False)
 
 
 def load_finbert(device=None):
@@ -71,46 +66,45 @@ def load_finbert(device=None):
     Returns:
         tuple: (model, tokenizer, device)
     """
-    if 'model' in _MODEL_CACHE:
-        return _MODEL_CACHE['model'], _MODEL_CACHE['tokenizer'], _MODEL_CACHE['device']
+    with _MODEL_CACHE_LOCK:
+        if 'model' in _MODEL_CACHE:
+            return _MODEL_CACHE['model'], _MODEL_CACHE['tokenizer'], _MODEL_CACHE['device']
 
-    from transformers import AutoModelForSequenceClassification, AutoTokenizer
+        from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
-    # Patch torch.load for torch 2.5 compatibility
-    _patch_torch_load()
+        model_path = _get_model_path()
 
-    model_path = _get_model_path()
+        if device is None:
+            device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-    if device is None:
-        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        logger.info(f'Loading FinBERT ({model_path}) on {device}...')
 
-    logger.info(f'Loading FinBERT ({model_path}) on {device}...')
+        tokenizer = AutoTokenizer.from_pretrained(model_path)
+        model = AutoModelForSequenceClassification.from_pretrained(model_path)
+        model = model.to(device)
+        model.eval()
 
-    tokenizer = AutoTokenizer.from_pretrained(model_path)
-    model = AutoModelForSequenceClassification.from_pretrained(model_path)
-    model = model.to(device)
-    model.eval()
+        # FP16 on GPU for memory efficiency (4GB VRAM constraint)
+        if device == 'cuda':
+            model = model.half()
+            logger.info('FinBERT loaded in FP16 mode')
 
-    # FP16 on GPU for memory efficiency (4GB VRAM constraint)
-    if device == 'cuda':
-        model = model.half()
-        logger.info('FinBERT loaded in FP16 mode')
+        _MODEL_CACHE['model'] = model
+        _MODEL_CACHE['tokenizer'] = tokenizer
+        _MODEL_CACHE['device'] = device
 
-    _MODEL_CACHE['model'] = model
-    _MODEL_CACHE['tokenizer'] = tokenizer
-    _MODEL_CACHE['device'] = device
+        # Log VRAM usage
+        if device == 'cuda':
+            mem_mb = torch.cuda.memory_allocated() / 1024 / 1024
+            logger.info(f'FinBERT VRAM usage: {mem_mb:.0f} MB')
 
-    # Log VRAM usage
-    if device == 'cuda':
-        mem_mb = torch.cuda.memory_allocated() / 1024 / 1024
-        logger.info(f'FinBERT VRAM usage: {mem_mb:.0f} MB')
-
-    return model, tokenizer, device
+    return _MODEL_CACHE['model'], _MODEL_CACHE['tokenizer'], _MODEL_CACHE['device']
 
 
 def clear_model_cache():
     """Clear cached model (free VRAM)."""
-    _MODEL_CACHE.clear()
+    with _MODEL_CACHE_LOCK:
+        _MODEL_CACHE.clear()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
 

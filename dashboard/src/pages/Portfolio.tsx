@@ -331,7 +331,7 @@ export default function Portfolio() {
                     <YAxis tick={{ fontSize: 10, fill: '#9CA3AF' }} axisLine={false} tickLine={false}
                       domain={['auto', 'auto']} tickFormatter={(v: number) => `₹${(v / 1000).toFixed(1)}k`} />
                     <Tooltip contentStyle={{ background: '#fff', border: '1px solid #E5E7EB', borderRadius: 12 }}
-                      formatter={(v: number) => [`₹${v.toLocaleString('en-IN')}`, 'Price']} />
+                      formatter={(v) => [`₹${Number(v).toLocaleString('en-IN')}`, 'Price']} />
                     <Area type="monotone" dataKey="price"
                       stroke={selectedStock.cumulative_return_1y >= 0 ? '#16A34A' : '#DC2626'}
                       strokeWidth={2} fill="url(#stockGrad)" dot={false} animationDuration={800} />

@@ -189,23 +189,39 @@ class RLRewardPoint(BaseModel):
     episode: int
     ppo_reward: float
     sac_reward: float
+    td3_reward: float = 0.0
+    a2c_reward: float = 0.0
+    ddpg_reward: float = 0.0
+    ensemble_reward: float = 0.0
 
 class RLStockWeight(BaseModel):
     ticker: str
     sector: str
     ppo_weight: float
     sac_weight: float
+    td3_weight: float = 0.0
+    a2c_weight: float = 0.0
+    ddpg_weight: float = 0.0
+    ensemble_weight: float = 0.0
 
 class RLCumulativePoint(BaseModel):
     day: int
     ppo: float
     sac: float
     equal_weight: float
+    td3: float = 0.0
+    a2c: float = 0.0
+    ddpg: float = 0.0
+    ensemble: float = 0.0
 
 class RLSectorAlloc(BaseModel):
     sector: str
     ppo_weight: float
     sac_weight: float
+    td3_weight: float = 0.0
+    a2c_weight: float = 0.0
+    ddpg_weight: float = 0.0
+    ensemble_weight: float = 0.0
 
 class RLWeightSnapshot(BaseModel):
     episode: int
@@ -233,6 +249,38 @@ class RLSummaryResponse(BaseModel):
     sac_annual_return: float
     ppo_annual_vol: float
     sac_annual_vol: float
+    # TD3
+    td3_episodes: int = 0
+    td3_avg_reward: float = 0.0
+    td3_sharpe: float = 0.0
+    td3_max_drawdown: float = 0.0
+    td3_sortino: float = 0.0
+    td3_annual_return: float = 0.0
+    td3_annual_vol: float = 0.0
+    # A2C
+    a2c_episodes: int = 0
+    a2c_avg_reward: float = 0.0
+    a2c_sharpe: float = 0.0
+    a2c_max_drawdown: float = 0.0
+    a2c_sortino: float = 0.0
+    a2c_annual_return: float = 0.0
+    a2c_annual_vol: float = 0.0
+    # DDPG
+    ddpg_episodes: int = 0
+    ddpg_avg_reward: float = 0.0
+    ddpg_sharpe: float = 0.0
+    ddpg_max_drawdown: float = 0.0
+    ddpg_sortino: float = 0.0
+    ddpg_annual_return: float = 0.0
+    ddpg_annual_vol: float = 0.0
+    # Ensemble
+    ensemble_episodes: int = 0
+    ensemble_avg_reward: float = 0.0
+    ensemble_sharpe: float = 0.0
+    ensemble_max_drawdown: float = 0.0
+    ensemble_sortino: float = 0.0
+    ensemble_annual_return: float = 0.0
+    ensemble_annual_vol: float = 0.0
     reward_curve: list[RLRewardPoint]
     weights: list[RLStockWeight]
     constraints: dict

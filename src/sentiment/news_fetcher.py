@@ -88,7 +88,8 @@ def fetch_google_news(query, max_results=20):
     url = f'https://news.google.com/rss/search?q={encoded}&hl=en-IN&gl=IN&ceid=IN:en'
 
     try:
-        feed = feedparser.parse(url)
+        feed = feedparser.parse(url, request_headers={'User-Agent': 'Mozilla/5.0'},
+                                agent='Mozilla/5.0', timeout=10)
         results = []
         for entry in feed.entries[:max_results]:
             published = None

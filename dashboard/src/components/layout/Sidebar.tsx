@@ -1,21 +1,17 @@
 import { NavLink } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import {
-  LayoutDashboard, PieChart, Network, Brain, AlertTriangle,
-  FlaskConical, Users, Atom, MessageSquare, GitGraph,
+  PieChart, Brain, AlertTriangle,
+  Users, MessageSquare, GitGraph,
   Settings, ExternalLink, ChevronLeft, ChevronRight,
 } from 'lucide-react';
 import { useState } from 'react';
 
 const navItems = [
-  { to: '/', icon: LayoutDashboard, label: 'Overview' },
-  { to: '/portfolio', icon: PieChart, label: 'Portfolio' },
-  { to: '/gnn', icon: Network, label: 'GNN Insights' },
+  { to: '/', icon: PieChart, label: 'Portfolio' },
   { to: '/rl', icon: Brain, label: 'RL Agent' },
   { to: '/stress', icon: AlertTriangle, label: 'Stress Testing' },
-  { to: '/nas', icon: FlaskConical, label: 'NAS Lab' },
   { to: '/fl', icon: Users, label: 'Federated' },
-  { to: '/quantum', icon: Atom, label: 'Quantum' },
   { to: '/sentiment', icon: MessageSquare, label: 'Sentiment' },
   { to: '/graph', icon: GitGraph, label: 'Graph Viz' },
 ];

@@ -2,12 +2,12 @@ import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Brain, Zap, Target, BarChart3, Loader2, AlertTriangle,
-  TrendingUp, TrendingDown, Shield, PieChart as PieIcon, ArrowUpRight, ArrowDownRight,
+  TrendingDown, Shield, ArrowUpRight, ArrowDownRight,
 } from 'lucide-react';
 import {
   ResponsiveContainer, AreaChart, Area, XAxis, YAxis,
   CartesianGrid, Tooltip, Legend, BarChart, Bar, Cell,
-  LineChart, Line, PieChart, Pie,
+  Line, PieChart, Pie,
 } from 'recharts';
 import { api } from '../lib/api';
 import type { RLSummaryResponse } from '../lib/api';
@@ -17,7 +17,7 @@ import PageHeader from '../components/ui/PageHeader';
 import PageInfoPanel from '../components/ui/PageInfoPanel';
 import MetricInfoPanel from '../components/ui/MetricInfoPanel';
 import Badge from '../components/ui/Badge';
-import { staggerContainer, fadeSlideUp } from '../lib/animations';
+import { staggerContainer } from '../lib/animations';
 
 const PAGE_INFO = {
   title: 'RL Agent Monitor — What Does This Page Show?',
@@ -66,8 +66,26 @@ const SECTOR_COLORS: Record<string, string> = {
   'Unknown': '#9CA3AF',
 };
 
+type AgentType = 'PPO' | 'SAC' | 'TD3' | 'A2C' | 'DDPG' | 'Ensemble'
+const ALGO_PREFIX: Record<AgentType, string> = {
+  PPO: 'ppo', SAC: 'sac', TD3: 'td3', A2C: 'a2c', DDPG: 'ddpg', Ensemble: 'ensemble',
+}
+const ALGO_COLORS: Record<AgentType, string> = {
+  PPO: '#C15F3C', SAC: '#6366F1', TD3: '#0D9488',
+  A2C: '#F59E0B', DDPG: '#EC4899', Ensemble: '#16A34A',
+}
+const ALGO_DESC: Record<AgentType, string> = {
+  PPO: 'Clipped policy gradient', SAC: 'Entropy-based exploration',
+  TD3: 'Twin delayed actor-critic', A2C: 'Advantage actor-critic',
+  DDPG: 'Deterministic policy gradient', Ensemble: 'Best-of-all average',
+}
+
+function getM(data: RLSummaryResponse, algo: AgentType, field: string): number {
+  return ((data as unknown as Record<string, number>)[`${ALGO_PREFIX[algo]}_${field}`]) ?? 0
+}
+
 export default function RlAgent() {
-  const [agent, setAgent] = useState<'PPO' | 'SAC'>('PPO');
+  const [agent, setAgent] = useState<AgentType>('PPO');
   const [data, setData] = useState<RLSummaryResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -97,101 +115,108 @@ export default function RlAgent() {
     </div>
   );
 
-  const isPPO = agent === 'PPO';
-  const rewardData = data.reward_curve.map(r => ({ episode: r.episode, ppo: r.ppo_reward, sac: r.sac_reward }));
-  const weightData = data.weights.map(w => ({
-    name: w.ticker, weight: isPPO ? w.ppo_weight : w.sac_weight, sector: w.sector,
+  const ak = ALGO_PREFIX[agent]
+  const rewardData = data.reward_curve.map(r => ({
+    episode: r.episode,
+    ppo: r.ppo_reward, sac: r.sac_reward, td3: r.td3_reward,
+    a2c: r.a2c_reward, ddpg: r.ddpg_reward, ensemble: r.ensemble_reward,
+  }));
+  const weightKey = `${ak}_weight` as keyof typeof data.weights[0]
+  const weightData = data.weights.slice(0, 15).map(w => ({
+    name: w.ticker,
+    weight: (w[weightKey] as number) ?? 0,
+    sector: w.sector,
   }));
 
   // Sector allocation pie data
   const sectorPieData = data.sector_allocation.map(s => ({
     name: s.sector,
-    value: isPPO ? s.ppo_weight : s.sac_weight,
+    value: (s[`${ak}_weight` as keyof typeof s] as number) ?? 0,
     color: SECTOR_COLORS[s.sector] || '#9CA3AF',
   })).filter(d => d.value > 1);
+
+  // All-algo comparison rows
+  const allAlgos: AgentType[] = ['PPO', 'SAC', 'TD3', 'A2C', 'DDPG', 'Ensemble']
+  const bestSharpe = Math.max(...allAlgos.map(a => getM(data, a, 'sharpe')))
 
   return (
     <div>
       <div className="flex items-center justify-between">
         <PageHeader
           title="RL Agent Monitor"
-          subtitle={`PPO + SAC on real NIFTY 50 — ${data.ppo_episodes} episodes — validation 2022-2023`}
+          subtitle={`5 algorithms + Ensemble on real NIFTY 50 — ${data.ppo_episodes} episodes — validation 2022-2023`}
           icon={<Brain size={24} />}
         />
         <PageInfoPanel title={PAGE_INFO.title} sections={PAGE_INFO.sections} />
       </div>
 
-      {/* Agent Toggle */}
-      <div className="flex items-center gap-3 mb-6">
-        {(['PPO', 'SAC'] as const).map(a => (
+      {/* 6-Algorithm Selector */}
+      <div className="flex flex-wrap items-center gap-2 mb-6">
+        {(Object.keys(ALGO_PREFIX) as AgentType[]).map(a => (
           <button key={a} onClick={() => setAgent(a)}
-            className={`px-5 py-2.5 rounded-xl text-sm font-medium transition-all ${
+            className={`px-4 py-2 rounded-xl text-sm font-medium transition-all border ${
               agent === a
-                ? 'bg-primary text-white shadow-md shadow-primary/20'
-                : 'bg-bg-card text-text-secondary hover:bg-primary-subtle border border-border'
-            }`}>
-            {a}
+                ? 'text-white shadow-md border-transparent'
+                : 'bg-bg-card text-text-secondary hover:bg-primary-subtle border-border'
+            }`}
+            style={agent === a ? { backgroundColor: ALGO_COLORS[a], borderColor: ALGO_COLORS[a] } : {}}>
+            {a === 'Ensemble' ? '★ Ensemble' : a}
           </button>
         ))}
-        <span className="text-xs text-text-muted ml-2">
-          {isPPO ? 'Stable, clipped updates' : 'Entropy-based exploration'}
-        </span>
+        <span className="text-xs text-text-muted ml-1">{ALGO_DESC[agent]}</span>
       </div>
 
-      {/* Metric Cards */}
+      {/* Metric Cards — selected algorithm */}
       <motion.div variants={staggerContainer} initial="hidden" animate="visible"
         className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-2">
-        <MetricCard title="Episodes" value={isPPO ? data.ppo_episodes : data.sac_episodes} decimals={0} icon={<Target size={18} />}
+        <MetricCard title="Episodes" value={getM(data, agent, 'episodes')} decimals={0} icon={<Target size={18} />}
           onClick={() => setExpandedMetric(m => m === 'Episodes' ? null : 'Episodes')} active={expandedMetric === 'Episodes'} />
-        <MetricCard title="Avg Reward" value={isPPO ? data.ppo_avg_reward : data.sac_avg_reward} decimals={4} icon={<Zap size={18} />}
+        <MetricCard title="Avg Reward" value={getM(data, agent, 'avg_reward')} decimals={4} icon={<Zap size={18} />}
           onClick={() => setExpandedMetric(m => m === 'Avg Reward' ? null : 'Avg Reward')} active={expandedMetric === 'Avg Reward'} />
-        <MetricCard title="Sharpe (Val)" value={isPPO ? data.ppo_sharpe : data.sac_sharpe} decimals={4} icon={<BarChart3 size={18} />}
+        <MetricCard title="Sharpe (Val)" value={getM(data, agent, 'sharpe')} decimals={4} icon={<BarChart3 size={18} />}
           onClick={() => setExpandedMetric(m => m === 'Sharpe (Val)' ? null : 'Sharpe (Val)')} active={expandedMetric === 'Sharpe (Val)'} />
-        <MetricCard title="Max Drawdown" value={(isPPO ? data.ppo_max_drawdown : data.sac_max_drawdown) * 100} decimals={2} suffix="%"
+        <MetricCard title="Max Drawdown" value={getM(data, agent, 'max_drawdown') * 100} decimals={2} suffix="%"
           onClick={() => setExpandedMetric(m => m === 'Max Drawdown' ? null : 'Max Drawdown')} active={expandedMetric === 'Max Drawdown'} />
       </motion.div>
       <MetricInfoPanel expandedMetric={expandedMetric} onClose={() => setExpandedMetric(null)} details={METRIC_DETAILS} />
 
-      {/* PPO vs SAC Head-to-Head Comparison */}
+      {/* 6-Algorithm Comparison Table */}
       <Card className="mb-6">
-        <h2 className="font-display font-bold text-lg text-secondary mb-4">PPO vs SAC — Head-to-Head</h2>
+        <h2 className="font-display font-bold text-lg text-secondary mb-4">All Algorithms — Comparison</h2>
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-border">
-                <th className="text-left py-2 font-medium text-text-secondary">Metric</th>
-                <th className="text-right py-2 font-medium" style={{ color: '#C15F3C' }}>PPO</th>
-                <th className="text-right py-2 font-medium" style={{ color: '#6366F1' }}>SAC</th>
-                <th className="text-right py-2 font-medium text-text-secondary">Winner</th>
+                <th className="text-left py-2 font-medium text-text-secondary">Algorithm</th>
+                <th className="text-right py-2 font-medium text-text-secondary">Sharpe</th>
+                <th className="text-right py-2 font-medium text-text-secondary">Sortino</th>
+                <th className="text-right py-2 font-medium text-text-secondary">Ann. Return</th>
+                <th className="text-right py-2 font-medium text-text-secondary">Volatility</th>
+                <th className="text-right py-2 font-medium text-text-secondary">Max DD</th>
               </tr>
             </thead>
             <tbody>
-              {[
-                { metric: 'Sharpe Ratio', ppo: data.ppo_sharpe, sac: data.sac_sharpe, fmt: (v: number) => v.toFixed(4), higher: true },
-                { metric: 'Sortino Ratio', ppo: data.ppo_sortino, sac: data.sac_sortino, fmt: (v: number) => v.toFixed(4), higher: true },
-                { metric: 'Annual Return', ppo: data.ppo_annual_return, sac: data.sac_annual_return, fmt: (v: number) => `${v.toFixed(2)}%`, higher: true },
-                { metric: 'Annual Volatility', ppo: data.ppo_annual_vol, sac: data.sac_annual_vol, fmt: (v: number) => `${v.toFixed(2)}%`, higher: false },
-                { metric: 'Max Drawdown', ppo: data.ppo_max_drawdown * 100, sac: data.sac_max_drawdown * 100, fmt: (v: number) => `${v.toFixed(2)}%`, higher: false },
-                { metric: 'Avg Reward (Last 10)', ppo: data.ppo_avg_reward, sac: data.sac_avg_reward, fmt: (v: number) => v.toFixed(4), higher: true },
-              ].map(row => {
-                const ppoWins = row.higher ? row.ppo >= row.sac : row.ppo <= row.sac;
+              {allAlgos.map(a => {
+                const isEnsemble = a === 'Ensemble'
+                const isBest = getM(data, a, 'sharpe') === bestSharpe
                 return (
-                  <motion.tr key={row.metric} variants={fadeSlideUp}
-                    className="border-b border-border-light hover:bg-bg-card transition-colors">
-                    <td className="py-2.5 font-medium">{row.metric}</td>
-                    <td className={`py-2.5 text-right font-mono ${ppoWins ? 'font-bold text-primary' : 'text-text-muted'}`}>
-                      {row.fmt(row.ppo)}
+                  <tr key={a} onClick={() => setAgent(a)} style={{ cursor: 'pointer' }}
+                    className={`border-b border-border-light transition-colors ${
+                      agent === a ? 'bg-primary-subtle' : 'hover:bg-bg-card'
+                    } ${isEnsemble ? 'font-semibold' : ''}`}>
+                    <td className="py-2.5 flex items-center gap-2">
+                      <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: ALGO_COLORS[a] }} />
+                      {a}
+                      {isBest && <Badge variant="profit">Best</Badge>}
+                      {isEnsemble && <Badge variant="info">Recommended</Badge>}
                     </td>
-                    <td className={`py-2.5 text-right font-mono ${!ppoWins ? 'font-bold text-accent-indigo' : 'text-text-muted'}`}>
-                      {row.fmt(row.sac)}
-                    </td>
-                    <td className="py-2.5 text-right">
-                      <Badge variant={ppoWins ? 'profit' : 'info'}>
-                        {ppoWins ? 'PPO' : 'SAC'}
-                      </Badge>
-                    </td>
-                  </motion.tr>
-                );
+                    <td className="py-2.5 text-right font-mono">{getM(data, a, 'sharpe').toFixed(4)}</td>
+                    <td className="py-2.5 text-right font-mono">{getM(data, a, 'sortino').toFixed(4)}</td>
+                    <td className="py-2.5 text-right font-mono">{getM(data, a, 'annual_return').toFixed(2)}%</td>
+                    <td className="py-2.5 text-right font-mono">{getM(data, a, 'annual_vol').toFixed(2)}%</td>
+                    <td className="py-2.5 text-right font-mono">{(getM(data, a, 'max_drawdown') * 100).toFixed(2)}%</td>
+                  </tr>
+                )
               })}
             </tbody>
           </table>
@@ -230,24 +255,24 @@ export default function RlAgent() {
               <ResponsiveContainer width="100%" height={340} minHeight={1}>
                 <AreaChart data={rewardData} margin={{ top: 10, right: 10, bottom: 0, left: 10 }}>
                   <defs>
-                    <linearGradient id="grad-ppo" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stopColor="#C15F3C" stopOpacity={0.2} />
-                      <stop offset="100%" stopColor="#C15F3C" stopOpacity={0} />
-                    </linearGradient>
-                    <linearGradient id="grad-sac" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stopColor="#6366F1" stopOpacity={0.15} />
-                      <stop offset="100%" stopColor="#6366F1" stopOpacity={0} />
-                    </linearGradient>
+                    {(Object.entries(ALGO_COLORS) as [AgentType, string][]).map(([a, c]) => (
+                      <linearGradient key={a} id={`grad-rw-${a}`} x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stopColor={c} stopOpacity={a === 'Ensemble' ? 0 : 0.12} />
+                        <stop offset="100%" stopColor={c} stopOpacity={0} />
+                      </linearGradient>
+                    ))}
                   </defs>
                   <CartesianGrid stroke="#F3F4F6" strokeDasharray="3 3" vertical={false} />
-                  <XAxis dataKey="episode" tick={{ fontSize: 12, fill: '#9CA3AF' }} axisLine={{ stroke: '#E5E7EB' }} tickLine={false}
-                    label={{ value: 'Episode', position: 'insideBottom', offset: -5, style: { fontSize: 11, fill: '#9CA3AF' } }} />
-                  <YAxis tick={{ fontSize: 12, fill: '#9CA3AF' }} axisLine={false} tickLine={false}
-                    label={{ value: 'Sharpe', angle: -90, position: 'insideLeft', style: { fontSize: 11, fill: '#9CA3AF' } }} />
-                  <Tooltip contentStyle={{ background: '#fff', border: '1px solid #E5E7EB', borderRadius: 12, boxShadow: '0 4px 12px rgba(0,0,0,0.08)' }} />
-                  <Legend iconType="circle" iconSize={8} wrapperStyle={{ fontSize: 13 }} />
-                  <Area type="monotone" dataKey="ppo" name="PPO" stroke="#C15F3C" strokeWidth={2.5} fill="url(#grad-ppo)" dot={false} animationDuration={1500} />
-                  <Area type="monotone" dataKey="sac" name="SAC" stroke="#6366F1" strokeWidth={2} fill="url(#grad-sac)" dot={false} animationDuration={1500} />
+                  <XAxis dataKey="episode" tick={{ fontSize: 12, fill: '#9CA3AF' }} axisLine={{ stroke: '#E5E7EB' }} tickLine={false} />
+                  <YAxis tick={{ fontSize: 12, fill: '#9CA3AF' }} axisLine={false} tickLine={false} />
+                  <Tooltip contentStyle={{ background: '#fff', border: '1px solid #E5E7EB', borderRadius: 12 }} />
+                  <Legend iconType="circle" iconSize={8} wrapperStyle={{ fontSize: 12 }} />
+                  <Area type="monotone" dataKey="ppo" name="PPO" stroke="#C15F3C" strokeWidth={1.5} fill="url(#grad-rw-PPO)" dot={false} isAnimationActive={false} />
+                  <Area type="monotone" dataKey="sac" name="SAC" stroke="#6366F1" strokeWidth={1.5} fill="url(#grad-rw-SAC)" dot={false} isAnimationActive={false} />
+                  <Area type="monotone" dataKey="td3" name="TD3" stroke="#0D9488" strokeWidth={1.5} fill="url(#grad-rw-TD3)" dot={false} isAnimationActive={false} />
+                  <Area type="monotone" dataKey="a2c" name="A2C" stroke="#F59E0B" strokeWidth={1.5} fill="url(#grad-rw-A2C)" dot={false} isAnimationActive={false} />
+                  <Area type="monotone" dataKey="ddpg" name="DDPG" stroke="#EC4899" strokeWidth={1.5} fill="url(#grad-rw-DDPG)" dot={false} isAnimationActive={false} />
+                  <Area type="monotone" dataKey="ensemble" name="Ensemble" stroke="#16A34A" strokeWidth={3} fill="none" dot={false} isAnimationActive={false} />
                 </AreaChart>
               </ResponsiveContainer>
             </motion.div>
@@ -261,27 +286,19 @@ export default function RlAgent() {
               </p>
               <ResponsiveContainer width="100%" height={340} minHeight={1}>
                 <AreaChart data={data.cumulative_returns} margin={{ top: 10, right: 10, bottom: 0, left: 10 }}>
-                  <defs>
-                    <linearGradient id="grad-ppo-cum" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stopColor="#C15F3C" stopOpacity={0.15} />
-                      <stop offset="100%" stopColor="#C15F3C" stopOpacity={0} />
-                    </linearGradient>
-                    <linearGradient id="grad-sac-cum" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stopColor="#6366F1" stopOpacity={0.1} />
-                      <stop offset="100%" stopColor="#6366F1" stopOpacity={0} />
-                    </linearGradient>
-                  </defs>
                   <CartesianGrid stroke="#F3F4F6" strokeDasharray="3 3" vertical={false} />
-                  <XAxis dataKey="day" tick={{ fontSize: 12, fill: '#9CA3AF' }} axisLine={{ stroke: '#E5E7EB' }} tickLine={false}
-                    label={{ value: 'Trading Days', position: 'insideBottom', offset: -5, style: { fontSize: 11, fill: '#9CA3AF' } }} />
-                  <YAxis tick={{ fontSize: 12, fill: '#9CA3AF' }} axisLine={false} tickLine={false}
-                    tickFormatter={(v: number) => `${v}%`} />
+                  <XAxis dataKey="day" tick={{ fontSize: 12, fill: '#9CA3AF' }} axisLine={{ stroke: '#E5E7EB' }} tickLine={false} />
+                  <YAxis tick={{ fontSize: 12, fill: '#9CA3AF' }} axisLine={false} tickLine={false} tickFormatter={(v) => `${v}%`} />
                   <Tooltip contentStyle={{ background: '#fff', border: '1px solid #E5E7EB', borderRadius: 12 }}
-                    formatter={(v: number) => `${v.toFixed(2)}%`} />
-                  <Legend iconType="circle" iconSize={8} wrapperStyle={{ fontSize: 13 }} />
-                  <Area type="monotone" dataKey="ppo" name="PPO" stroke="#C15F3C" strokeWidth={2.5} fill="url(#grad-ppo-cum)" dot={false} animationDuration={1200} />
-                  <Area type="monotone" dataKey="sac" name="SAC" stroke="#6366F1" strokeWidth={2} fill="url(#grad-sac-cum)" dot={false} animationDuration={1200} />
-                  <Line type="monotone" dataKey="equal_weight" name="Equal Weight" stroke="#9CA3AF" strokeWidth={1.5} strokeDasharray="5 5" dot={false} animationDuration={1200} />
+                    formatter={(v) => `${Number(v).toFixed(2)}%`} />
+                  <Legend iconType="circle" iconSize={8} wrapperStyle={{ fontSize: 12 }} />
+                  <Area type="monotone" dataKey="ppo" name="PPO" stroke="#C15F3C" strokeWidth={1.5} fill="none" dot={false} isAnimationActive={false} />
+                  <Area type="monotone" dataKey="sac" name="SAC" stroke="#6366F1" strokeWidth={1.5} fill="none" dot={false} isAnimationActive={false} />
+                  <Area type="monotone" dataKey="td3" name="TD3" stroke="#0D9488" strokeWidth={1.5} fill="none" dot={false} isAnimationActive={false} />
+                  <Area type="monotone" dataKey="a2c" name="A2C" stroke="#F59E0B" strokeWidth={1.5} fill="none" dot={false} isAnimationActive={false} />
+                  <Area type="monotone" dataKey="ddpg" name="DDPG" stroke="#EC4899" strokeWidth={1.5} fill="none" dot={false} isAnimationActive={false} />
+                  <Area type="monotone" dataKey="ensemble" name="Ensemble" stroke="#16A34A" strokeWidth={3} fill="none" dot={false} isAnimationActive={false} />
+                  <Line type="monotone" dataKey="equal_weight" name="Equal Weight" stroke="#9CA3AF" strokeWidth={1.5} strokeDasharray="5 5" dot={false} isAnimationActive={false} />
                 </AreaChart>
               </ResponsiveContainer>
               <div className="flex justify-center gap-6 mt-3">
@@ -313,7 +330,7 @@ export default function RlAgent() {
                   <XAxis dataKey="name" tick={{ fontSize: 10, fill: '#6B7280' }} axisLine={{ stroke: '#E5E7EB' }} tickLine={false} angle={-35} textAnchor="end" />
                   <YAxis tick={{ fontSize: 12, fill: '#9CA3AF' }} axisLine={false} tickLine={false} tickFormatter={(v: number) => `${v}%`} />
                   <Tooltip contentStyle={{ background: '#fff', border: '1px solid #E5E7EB', borderRadius: 12 }}
-                    formatter={(v: number) => `${v.toFixed(2)}%`} />
+                    formatter={(v) => `${Number(v).toFixed(2)}%`} />
                   <Bar dataKey="weight" name="Weight %" radius={[6, 6, 0, 0]} animationDuration={800}>
                     {weightData.map((d, i) => (
                       <Cell key={i} fill={SECTOR_COLORS[d.sector] || '#9CA3AF'} opacity={0.85} />
@@ -345,7 +362,7 @@ export default function RlAgent() {
                 ))}
               </Pie>
               <Tooltip contentStyle={{ borderRadius: 12, border: '1px solid #E5E7EB', fontSize: 12 }}
-                formatter={(v: number) => `${v.toFixed(1)}%`} />
+                formatter={(v) => `${Number(v).toFixed(1)}%`} />
             </PieChart>
           </ResponsiveContainer>
           <div className="flex flex-wrap justify-center gap-2 mt-1">

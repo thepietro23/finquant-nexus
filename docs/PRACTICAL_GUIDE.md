@@ -811,12 +811,12 @@ if env.done:
 
 ## Phase 7: Deep RL Agent — Manual Testing
 
-### 1. Create PPO Agent
+### 1. Create All 5 Agents
 ```python
 python -c "
 import numpy as np
 from src.rl.environment import PortfolioEnv
-from src.rl.agent import create_ppo_agent
+from src.rl.agent import create_ppo_agent, create_sac_agent, create_td3_agent, create_a2c_agent, create_ddpg_agent
 
 np.random.seed(42)
 n = 5
@@ -824,10 +824,15 @@ features = np.random.randn(n, 300, 21).astype(np.float32)
 prices = 100 * np.cumprod(1 + np.random.randn(n, 300) * 0.01, axis=1).astype(np.float32)
 env = PortfolioEnv(features, prices, episode_length=50)
 
-model = create_ppo_agent(env, device='cpu')
-print(f'PPO params: {sum(p.numel() for p in model.policy.parameters()):,}')
-print(f'Device: {model.device}')
-print(f'Policy: {model.policy}')
+ppo  = create_ppo_agent(env, device='cpu')
+sac  = create_sac_agent(env, device='cpu', buffer_size=1000, batch_size=32, learning_starts=100)
+td3  = create_td3_agent(env, device='cpu', buffer_size=1000, batch_size=32, learning_starts=100)
+a2c  = create_a2c_agent(env, device='cpu')
+ddpg = create_ddpg_agent(env, device='cpu', buffer_size=1000, batch_size=32, learning_starts=100)
+
+for name, m in [('PPO', ppo), ('SAC', sac), ('TD3', td3), ('A2C', a2c), ('DDPG', ddpg)]:
+    params = sum(p.numel() for p in m.policy.parameters())
+    print(f'{name}: {params:,} params, device={m.device}')
 "
 ```
 
@@ -847,23 +852,23 @@ env = PortfolioEnv(features, prices, episode_length=50)
 model = create_ppo_agent(env, device='cpu')
 print('Training PPO (1000 steps)...')
 model.learn(total_timesteps=1000)
-print('Training done!')
 
 metrics = evaluate_agent(model, env, n_episodes=3)
-print(f'=== PPO Evaluation (3 episodes) ===')
 print(f'Mean return: {metrics[\"mean_return\"]:.2%}')
 print(f'Sharpe ratio: {metrics[\"mean_sharpe\"]:.2f}')
 print(f'Max drawdown: {metrics[\"mean_max_dd\"]:.2%}')
-print(f'Avg steps/episode: {metrics[\"mean_steps\"]:.0f}')
 "
 ```
 
-### 3. PPO vs SAC Comparison
+### 3. All 5 Algorithms + Ensemble Comparison
 ```python
 python -c "
 import numpy as np
 from src.rl.environment import PortfolioEnv
-from src.rl.agent import create_ppo_agent, create_sac_agent, compare_agents
+from src.rl.agent import (
+    create_ppo_agent, create_sac_agent, create_td3_agent,
+    create_a2c_agent, create_ddpg_agent, EnsembleAgent, compare_agents, evaluate_agent
+)
 
 np.random.seed(42)
 n = 5
@@ -871,19 +876,33 @@ features = np.random.randn(n, 300, 21).astype(np.float32)
 prices = 100 * np.cumprod(1 + np.random.randn(n, 300) * 0.01, axis=1).astype(np.float32)
 env = PortfolioEnv(features, prices, episode_length=50)
 
-print('Training PPO (1000 steps)...')
-ppo = create_ppo_agent(env, device='cpu')
-ppo.learn(total_timesteps=1000)
+buf = dict(buffer_size=1000, batch_size=32, learning_starts=100)
+models = {}
+for name, fn, kw in [
+    ('PPO',  create_ppo_agent,  {}),
+    ('SAC',  create_sac_agent,  buf),
+    ('TD3',  create_td3_agent,  buf),
+    ('A2C',  create_a2c_agent,  {}),
+    ('DDPG', create_ddpg_agent, buf),
+]:
+    m = fn(env, device='cpu', **kw)
+    print(f'Training {name}...')
+    m.learn(total_timesteps=500)
+    models[name] = m
 
-print('Training SAC (1000 steps)...')
-sac = create_sac_agent(env, device='cpu', buffer_size=1000, batch_size=32, learning_starts=100)
-sac.learn(total_timesteps=1000)
+# Ensemble — averages all 5
+ensemble = EnsembleAgent(list(models.values()))
+ens_metrics = evaluate_agent(ensemble, env, n_episodes=3)
 
+# Compare all
+result = compare_agents(
+    models['PPO'], models['SAC'], env, n_episodes=2,
+    td3_model=models['TD3'], a2c_model=models['A2C'], ddpg_model=models['DDPG']
+)
 print()
-result = compare_agents(ppo, sac, env, n_episodes=3)
-print(f'=== PPO vs SAC ===')
-print(f'PPO — return: {result[\"ppo\"][\"mean_return\"]:.2%}, sharpe: {result[\"ppo\"][\"mean_sharpe\"]:.2f}')
-print(f'SAC — return: {result[\"sac\"][\"mean_return\"]:.2%}, sharpe: {result[\"sac\"][\"mean_sharpe\"]:.2f}')
+for algo in ['ppo', 'sac', 'td3', 'a2c', 'ddpg']:
+    print(f'{algo.upper():5}: sharpe={result[algo][\"mean_sharpe\"]:.2f}, return={result[algo][\"mean_return\"]:.2%}')
+print(f'ENS  : sharpe={ens_metrics[\"mean_sharpe\"]:.2f}, return={ens_metrics[\"mean_return\"]:.2%}')
 print(f'Winner: {result[\"winner\"]}')
 "
 ```
@@ -1554,7 +1573,7 @@ fqn1/
 │   │   └── tgat.py          # T-GAT: multi-relational GAT + GRU
 │   ├── rl/
 │   │   ├── environment.py   # Gymnasium portfolio env
-│   │   └── agent.py         # PPO + SAC agents (SB3)
+│   │   └── agent.py         # PPO/SAC/TD3/A2C/DDPG + EnsembleAgent (SB3 + FinRL)
 │   ├── gan/
 │   │   ├── timegan.py       # TimeGAN: 5 components, 3-phase training
 │   │   └── stress.py        # VaR, CVaR, Monte Carlo, crash scenarios
@@ -1725,23 +1744,21 @@ npm run dev
 
 ### 3. Navigate Pages
 ```
-http://localhost:3000/          → Overview (portfolio metrics, charts)
-http://localhost:3000/portfolio → Portfolio (stock list, sector weights)
-http://localhost:3000/gnn       → GNN Insights (attention heatmap, graph)
-http://localhost:3000/rl        → RL Agent (PPO vs SAC, weights)
-http://localhost:3000/stress    → Stress Testing (Monte Carlo, VaR)
-http://localhost:3000/nas       → NAS Lab (architecture search)
-http://localhost:3000/fl        → Federated Learning (convergence)
-http://localhost:3000/quantum   → Quantum Lab (QAOA circuit, Sharpe)
-http://localhost:3000/sentiment → Sentiment (FinBERT live analysis)
-http://localhost:3000/graph     → Graph Viz (stock network, RL weights)
+http://localhost:3000/          → Portfolio (home — Sharpe, Sortino, holdings)   [was /portfolio]
+http://localhost:3000/rl        → RL Agent (6 algorithms + Ensemble comparison)
+http://localhost:3000/stress    → Stress Testing (Monte Carlo, VaR, CVaR)
+http://localhost:3000/fl        → Federated Learning (convergence, privacy)
+http://localhost:3000/sentiment → Sentiment (live FinBERT, auto-refresh 3min, trend chart)
+http://localhost:3000/graph     → Graph Viz (NIFTY50 stock network — unique feature)
+
+Removed pages: Overview (/), GNN Insights (/gnn), NAS Lab (/nas), Quantum (/quantum)
 ```
 
 ### 4. Test Live API Features
 ```
 - Sentiment page: Type "Company profits surged 50%" → Click Analyze → Score should be positive
 - Stress page: Set n_stocks=5, simulations=500 → Click Generate → Scenario table appears
-- Quantum page: Set n_assets=4, k_select=2 → Click Run QAOA → Circuit diagram + Sharpe comparison
+- RL Agent page: Click ★ Ensemble → Comparison table shows all 6 rows, charts show 6 lines
 - Graph page: Click on a stock node → Details panel shows sector, RL weight, connections
 ```
 

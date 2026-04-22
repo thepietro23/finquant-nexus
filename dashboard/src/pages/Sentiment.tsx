@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   MessageSquare, Send, TrendingUp, TrendingDown, Minus,
@@ -12,6 +12,7 @@ import type {
 import {
   ResponsiveContainer, BarChart, Bar, XAxis, YAxis,
   CartesianGrid, Tooltip, Cell, PieChart as RPieChart, Pie,
+  LineChart, Line, ReferenceLine,
 } from 'recharts';
 import Card from '../components/ui/Card';
 import MetricCard from '../components/ui/MetricCard';
@@ -19,7 +20,7 @@ import PageHeader from '../components/ui/PageHeader';
 import PageInfoPanel from '../components/ui/PageInfoPanel';
 import MetricInfoPanel from '../components/ui/MetricInfoPanel';
 import Badge from '../components/ui/Badge';
-import { staggerContainer, fadeSlideUp, scaleIn } from '../lib/animations';
+import { staggerContainer } from '../lib/animations';
 
 const PAGE_INFO = {
   title: 'Sentiment Monitor — What Does This Page Show?',
@@ -127,6 +128,25 @@ function NewsCard({ item, index }: { item: NewsItem; index: number }) {
   );
 }
 
+const REFRESH_INTERVAL = 180_000 // 3 minutes
+const HISTORY_KEY = 'fqn_sentiment_history'
+const MAX_HISTORY = 48
+
+interface TrendPoint { time: string; score: number; mood: string }
+
+function useTimeAgo(date: Date | null): string {
+  const [label, setLabel] = useState('—')
+  useEffect(() => {
+    if (!date) return
+    const id = setInterval(() => {
+      const secs = Math.floor((Date.now() - date.getTime()) / 1000)
+      setLabel(secs < 60 ? `${secs}s ago` : `${Math.floor(secs / 60)}m ago`)
+    }, 1000)
+    return () => clearInterval(id)
+  }, [date])
+  return label
+}
+
 export default function Sentiment() {
   // Manual analysis state
   const [text, setText] = useState('');
@@ -141,18 +161,56 @@ export default function Sentiment() {
   const [expandedMetric, setExpandedMetric] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'news' | 'portfolio' | 'sectors'>('news');
 
+  // Real-time state
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+  const [newCount, setNewCount] = useState(0);
+  const prevHeadlinesRef = useRef<Set<string>>(new Set());
+  const [history, setHistory] = useState<TrendPoint[]>(() => {
+    try { return JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]') }
+    catch { return [] }
+  });
+
+  const timeAgo = useTimeAgo(lastUpdated);
+
   function loadNewsSentiment() {
     setNewsLoading(true);
     setNewsError(null);
     api.newsSentiment()
-      .then(d => { setNewsData(d); setNewsLoading(false); })
+      .then(d => {
+        // Track new headlines
+        const incoming = new Set(d.news.map(n => n.headline))
+        const brandNew = [...incoming].filter(h => !prevHeadlinesRef.current.has(h))
+        if (prevHeadlinesRef.current.size > 0) setNewCount(brandNew.length)
+        prevHeadlinesRef.current = incoming
+
+        // Update trend history in localStorage
+        const point: TrendPoint = {
+          time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          score: d.avg_score,
+          mood: d.market_mood,
+        }
+        setHistory(prev => {
+          const next = [...prev.slice(-(MAX_HISTORY - 1)), point]
+          localStorage.setItem(HISTORY_KEY, JSON.stringify(next))
+          return next
+        })
+
+        setNewsData(d);
+        setLastUpdated(new Date());
+        setNewsLoading(false);
+      })
       .catch(e => {
         setNewsError(e instanceof Error ? e.message : 'Failed to fetch news sentiment');
         setNewsLoading(false);
       });
   }
 
-  useEffect(() => { loadNewsSentiment(); }, []);
+  // Auto-refresh every 3 minutes
+  useEffect(() => {
+    loadNewsSentiment();
+    const id = setInterval(loadNewsSentiment, REFRESH_INTERVAL)
+    return () => clearInterval(id)
+  }, []);
 
   async function analyze() {
     if (!text.trim()) return;
@@ -192,13 +250,56 @@ export default function Sentiment() {
   return (
     <div>
       <div className="flex items-center justify-between">
-        <PageHeader
-          title="Sentiment Monitor"
-          subtitle="FinBERT NLP — real-time news sentiment from Google News"
-          icon={<MessageSquare size={24} />}
-        />
+        <div className="flex items-center gap-3">
+          <PageHeader
+            title="Sentiment Monitor"
+            subtitle="FinBERT NLP — real-time news sentiment from Google News"
+            icon={<MessageSquare size={24} />}
+          />
+          {/* LIVE indicator */}
+          <div className="flex items-center gap-2 ml-2">
+            {newsLoading ? (
+              <span className="flex items-center gap-1.5 text-xs text-text-muted">
+                <RefreshCw size={12} className="animate-spin" /> Refreshing...
+              </span>
+            ) : (
+              <span className="flex items-center gap-1.5 text-xs font-medium text-[#16A34A]">
+                <span className="w-2 h-2 rounded-full bg-[#16A34A] animate-pulse" />
+                LIVE · {timeAgo}
+              </span>
+            )}
+            {newCount > 0 && (
+              <span className="text-xs bg-blue-50 text-blue-600 font-medium px-2 py-0.5 rounded-full">
+                +{newCount} new
+              </span>
+            )}
+          </div>
+        </div>
         <PageInfoPanel title={PAGE_INFO.title} sections={PAGE_INFO.sections} />
       </div>
+
+      {/* Sentiment Trend Chart (localStorage persistent) */}
+      {history.length > 1 && (
+        <div className="mb-4 bg-white border border-border rounded-xl px-4 pt-3 pb-2">
+          <div className="flex items-center justify-between mb-1">
+            <span className="text-xs font-medium text-text-secondary">Sentiment Trend (Session History)</span>
+            <span className="text-xs text-text-muted">{history.length} data points · auto-saves</span>
+          </div>
+          <ResponsiveContainer width="100%" height={70}>
+            <LineChart data={history} margin={{ top: 4, right: 8, bottom: 0, left: 8 }}>
+              <ReferenceLine y={0} stroke="#D1D5DB" strokeDasharray="3 3" />
+              <Line type="monotone" dataKey="score" stroke="#16A34A" strokeWidth={2} dot={false} isAnimationActive={false} />
+              <XAxis dataKey="time" hide />
+              <YAxis domain={[-1, 1]} hide />
+              <Tooltip
+                contentStyle={{ background: '#fff', border: '1px solid #E5E7EB', borderRadius: 8, fontSize: 11 }}
+                formatter={(v) => [Number(v).toFixed(3), 'Avg Score']}
+                labelFormatter={(l) => `Time: ${l}`}
+              />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+      )}
 
       {/* Metric Cards */}
       {newsData && (
@@ -310,7 +411,14 @@ export default function Sentiment() {
                       ? 'bg-primary text-white shadow-sm'
                       : 'text-text-secondary hover:text-text'
                   }`}>
-                  {tab === 'news' ? 'News' : tab === 'portfolio' ? 'Portfolio Impact' : 'Sectors'}
+                  {tab === 'news' ? (
+                    <span className="flex items-center gap-1">
+                      News
+                      {activeTab !== 'news' && newCount > 0 && (
+                        <span className="bg-blue-500 text-white text-[9px] font-bold px-1.5 rounded-full">+{newCount}</span>
+                      )}
+                    </span>
+                  ) : tab === 'portfolio' ? 'Portfolio Impact' : 'Sectors'}
                 </button>
               ))}
             </div>
@@ -417,7 +525,7 @@ export default function Sentiment() {
                           axisLine={false} tickLine={false} width={65} />
                         <Tooltip
                           contentStyle={{ background: '#fff', border: '1px solid #E5E7EB', borderRadius: 12, fontSize: 12 }}
-                          formatter={(v: number) => [v.toFixed(4), 'Score']}
+                          formatter={(v) => [Number(v).toFixed(4), 'Score']}
                         />
                         <Bar dataKey="score" name="Sentiment" radius={[0, 6, 6, 0]} animationDuration={1000}>
                           {sectorChartData.map((s, i) => (
@@ -488,7 +596,7 @@ export default function Sentiment() {
                   ))}
                 </Pie>
                 <Tooltip contentStyle={{ borderRadius: 12, border: '1px solid #E5E7EB', fontSize: 12 }}
-                  formatter={(v: number) => [`${v} headlines`, 'Count']} />
+                  formatter={(v) => [`${v} headlines`, 'Count']} />
               </RPieChart>
             </ResponsiveContainer>
             <div className="flex flex-wrap justify-center gap-3 mt-2">

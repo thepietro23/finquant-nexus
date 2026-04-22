@@ -1,73 +1,43 @@
-# React + TypeScript + Vite
+# FINQUANT-NEXUS v4 — React Dashboard
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Interactive financial AI dashboard built with React + TypeScript + Vite.
 
-Currently, two official plugins are available:
+## Tech Stack
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+- **React 19** + TypeScript + Vite
+- **Tailwind CSS v4** — Light warm theme (terracotta `#C15F3C` primary)
+- **Framer Motion** — Spring animations
+- **Recharts** — Area, bar, line, pie charts
+- **Lucide React** — Icons
+- **TanStack React Query** — API state management
+- **Zustand** — Global state
 
-## React Compiler
+## Pages (6 Total)
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+| Page | Route | Description |
+|------|-------|-------------|
+| Portfolio | `/` | Core output — Sharpe, Sortino, holdings, performance |
+| RL Agent | `/rl` | 5 algorithms (PPO/SAC/TD3/A2C/DDPG) + Ensemble comparison |
+| Stress Testing | `/stress` | Monte Carlo + 4 crash scenarios (VaR, CVaR, Survival Rate) |
+| Federated | `/fl` | FedAvg/FedProx convergence, sector clients, DP-SGD privacy |
+| Sentiment | `/sentiment` | Live FinBERT analysis, auto-refresh every 3 min, trend chart |
+| Graph Viz | `/graph` | Interactive NIFTY 50 stock network (sector + supply + correlation edges) |
 
-## Expanding the ESLint configuration
+## Running
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
-
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```bash
+npm install
+npm run dev        # → http://localhost:3000
+npm run build      # production build
+npm run preview    # preview production build
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
-
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
-
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+Backend (FastAPI) must be running on port 8001:
+```bash
+cd ..
+python -m uvicorn src.api.main:app --port 8001 --reload
 ```
+
+## API Proxy
+
+`vite.config.ts` proxies `/api/*` requests to `http://localhost:8001`.

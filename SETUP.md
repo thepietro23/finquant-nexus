@@ -81,7 +81,9 @@ pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-This installs 38+ packages: numpy, pandas, scikit-learn, torch-geometric, transformers, stable-baselines3, qiskit, fastapi, flwr, wandb, etc.
+This installs 39+ packages: numpy, pandas, scikit-learn, torch-geometric, transformers, stable-baselines3, finrl, qiskit, fastapi, flwr, wandb, curl_cffi, etc.
+
+> **Note on finrl:** If `finrl>=3.0` causes a gymnasium version conflict, the project automatically falls back to using `stable-baselines3` directly for TD3/A2C/DDPG — behavior is identical.
 
 ### Troubleshooting: torch-geometric
 

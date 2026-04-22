@@ -23,7 +23,7 @@ RUN pip install --no-cache-dir torch torchvision torchaudio --index-url https://
 
 # Copy source
 COPY src/ src/
-COPY config/ config/
+COPY configs/ configs/
 COPY tests/ tests/
 
 # Expose API port

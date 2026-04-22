@@ -25,6 +25,7 @@ tokenizers>=0.15
 # --- RL ---
 gymnasium>=0.29
 stable-baselines3>=2.2
+finrl>=3.0              # DRLAgent wrapper for TD3/A2C/DDPG; fallback to SB3 if gymnasium conflict
 
 # --- GAN (uses PyTorch directly) ---
 
@@ -67,3 +68,4 @@ httpx>=0.25         # For FastAPI testing
 tqdm>=4.66
 requests>=2.31
 feedparser>=6.0     # Google News RSS parsing
+curl_cffi>=0.6      # SSL bypass for yfinance in proxy/college networks

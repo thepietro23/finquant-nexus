@@ -89,12 +89,30 @@ export interface StockDetailResponse {
 }
 
 // --- RL Agent ---
-export interface RLRewardPoint { episode: number; ppo_reward: number; sac_reward: number }
-export interface RLStockWeight { ticker: string; sector: string; ppo_weight: number; sac_weight: number }
-export interface RLCumulativePoint { day: number; ppo: number; sac: number; equal_weight: number }
-export interface RLSectorAlloc { sector: string; ppo_weight: number; sac_weight: number }
+export interface RLRewardPoint {
+  episode: number; ppo_reward: number; sac_reward: number;
+  td3_reward: number; a2c_reward: number; ddpg_reward: number; ensemble_reward: number;
+}
+export interface RLStockWeight {
+  ticker: string; sector: string;
+  ppo_weight: number; sac_weight: number;
+  td3_weight: number; a2c_weight: number; ddpg_weight: number; ensemble_weight: number;
+}
+export interface RLCumulativePoint {
+  day: number; ppo: number; sac: number; equal_weight: number;
+  td3: number; a2c: number; ddpg: number; ensemble: number;
+}
+export interface RLSectorAlloc {
+  sector: string;
+  ppo_weight: number; sac_weight: number;
+  td3_weight: number; a2c_weight: number; ddpg_weight: number; ensemble_weight: number;
+}
 export interface RLWeightSnapshot { episode: number; weights: Record<string, number> }
 export interface RLStockContrib { ticker: string; sector: string; weight: number; return_contrib: number; cumulative_return: number }
+export type AgentType = 'PPO' | 'SAC' | 'TD3' | 'A2C' | 'DDPG' | 'Ensemble'
+export const ALGO_PREFIX: Record<AgentType, string> = {
+  PPO: 'ppo', SAC: 'sac', TD3: 'td3', A2C: 'a2c', DDPG: 'ddpg', Ensemble: 'ensemble',
+}
 export interface RLSummaryResponse {
   ppo_episodes: number; sac_episodes: number;
   ppo_avg_reward: number; sac_avg_reward: number;
@@ -103,6 +121,14 @@ export interface RLSummaryResponse {
   ppo_sortino: number; sac_sortino: number;
   ppo_annual_return: number; sac_annual_return: number;
   ppo_annual_vol: number; sac_annual_vol: number;
+  td3_episodes: number; td3_avg_reward: number; td3_sharpe: number;
+  td3_max_drawdown: number; td3_sortino: number; td3_annual_return: number; td3_annual_vol: number;
+  a2c_episodes: number; a2c_avg_reward: number; a2c_sharpe: number;
+  a2c_max_drawdown: number; a2c_sortino: number; a2c_annual_return: number; a2c_annual_vol: number;
+  ddpg_episodes: number; ddpg_avg_reward: number; ddpg_sharpe: number;
+  ddpg_max_drawdown: number; ddpg_sortino: number; ddpg_annual_return: number; ddpg_annual_vol: number;
+  ensemble_episodes: number; ensemble_avg_reward: number; ensemble_sharpe: number;
+  ensemble_max_drawdown: number; ensemble_sortino: number; ensemble_annual_return: number; ensemble_annual_vol: number;
   reward_curve: RLRewardPoint[];
   weights: RLStockWeight[];
   constraints: Record<string, number>;

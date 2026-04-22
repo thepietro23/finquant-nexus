@@ -1,8 +1,8 @@
 # FINQUANT-NEXUS v4 — Phase-wise Progress Tracker
 
-> **Last Updated:** 2026-03-17
-> **Current Phase:** Phase 14 (Dashboard) — ✅ DONE
-> **Overall:** Phase 0-14 = 232/232 tests GREEN + Dashboard 10 pages built
+> **Last Updated:** 2026-04-22
+> **Current Phase:** Phase 14 (Dashboard) — ✅ DONE + Restructured
+> **Overall:** Phase 0-14 = 246/246 tests GREEN + Dashboard 6 pages (restructured from 10)
 
 ---
 
@@ -17,13 +17,13 @@
 | 4 | Graph Construction | ✅ DONE | D6-D7 | Correlation + sector + supply chain edges |
 | 5 | T-GAT Model | ✅ DONE | D8-D10 | Temporal Graph Attention Network |
 | 6 | RL Environment | ✅ DONE | D10-D12 | Gym env for portfolio management |
-| 7 | Deep RL Agent | ✅ DONE | D12-D17 | PPO + SAC training |
+| 7 | Deep RL Agent | ✅ DONE | D12-D17 | PPO + SAC + TD3 + A2C + DDPG + Ensemble |
 | 8-9 | TimeGAN + Stress | ✅ DONE | D18-D24 | Synthetic data + stress testing |
 | 10 | NAS/DARTS | ✅ DONE | D25-D30 | DARTS T-GAT search + RL policy grid search |
 | 11 | Federated Learning | ✅ DONE | D31-D37 | FedAvg/FedProx + DP-SGD, 4 sector clients |
 | 12 | Quantum ML | ✅ DONE | D38-D42 | QAOA portfolio selection + classical benchmark |
 | 13 | API + Docker | ✅ DONE | D43-D46 | FastAPI + Docker + 15 tests |
-| 14 | Dashboard | ✅ DONE | D46-D49 | React + Tailwind + 10 pages + Graph Viz |
+| 14 | Dashboard | ✅ DONE + Restructured | D46-D49 | React + Tailwind + 6 pages + FinRL + Real-time Sentiment |
 | 15 | Thesis + Demo | NOT STARTED | D50-D56 | Final thesis document |
 
 ---
@@ -307,33 +307,66 @@ Output: (n_stocks, 64) stock embeddings
 
 ---
 
-## PHASE 7: Deep RL Agent — ✅ DONE
+## PHASE 7: Deep RL Agent — ✅ DONE + Upgraded
 
 ### Kya Banaya (What)
 | File | Purpose | Lines | Status |
 |------|---------|-------|--------|
-| `src/rl/agent.py` | PPO + SAC agents, training, evaluation, comparison | ~250 | ✅ |
-| `tests/test_agent.py` | 16 tests (12 unit + 4 edge cases) | ~230 | ✅ 16/16 PASS |
+| `src/rl/agent.py` | PPO + SAC + TD3 + A2C + DDPG + EnsembleAgent | ~420 | ✅ |
+| `tests/test_agent.py` | 30 tests (24 unit + 6 edge/ensemble cases) | ~380 | ✅ 30/30 PASS |
 
 ### Key Components
-| Function | Kya Karta Hai |
-|----------|---------------|
+| Function/Class | Kya Karta Hai |
+|----------------|---------------|
 | `create_ppo_agent()` | PPO with config-driven hyperparams, MLP policy [128, 64] |
 | `create_sac_agent()` | SAC with replay buffer, auto entropy |
+| `create_td3_agent()` | TD3 — Twin Delayed DDPG, policy_delay=2, aggressive momentum |
+| `create_a2c_agent()` | A2C — on-policy, short rollouts (n_steps=5), fast convergence |
+| `create_ddpg_agent()` | DDPG — deterministic policy, no entropy regularization |
+| `EnsembleAgent` | Averages predicted actions from N trained models (weighted/equal) |
 | `train_agent()` | Training with eval callback + portfolio metrics logging |
 | `evaluate_agent()` | Multi-episode evaluation → mean return, Sharpe, max DD |
-| `compare_agents()` | PPO vs SAC head-to-head comparison |
-| `save_agent() / load_agent()` | Model persistence (.zip format) |
+| `compare_agents()` | All 5 models + ensemble comparison, backward compatible |
+| `save_agent() / load_agent()` | Model persistence (.zip), supports all 5 algorithms |
+
+### FinRL Integration
+- `finrl>=3.0` added to `requirements.txt`
+- Try/except fallback: if FinRL has gymnasium conflict, SB3 used directly (functionally identical)
+- `DRLAgent` wrapper available when FinRL installed
+- `EnsembleAgent` is custom implementation (not FinRL's DRLEnsembleAgent — works with custom PortfolioEnv)
+
+### EnsembleAgent Design
+```python
+class EnsembleAgent:
+    # Averages raw action predictions from all models
+    # PortfolioEnv applies softmax → valid portfolio weights
+    def predict(obs, deterministic=True):
+        actions = [m.predict(obs)[0] for m in self.models]
+        return np.average(np.stack(actions), axis=0, weights=self.weights)
+```
+
+### configs/base.yaml — New Sections
+```yaml
+rl:
+  td3:   {lr: 0.0003, policy_delay: 2, target_policy_noise: 0.2, ...}
+  a2c:   {lr: 0.0007, n_steps: 5, ent_coef: 0.01}
+  ddpg:  {lr: 0.001, buffer_size: 100000, batch_size: 256}
+  ensemble: {rebalance_window: 63, top_k: 3}
+```
 
 ### Key Decisions
-1. **Stable-Baselines3** — Production-quality RL implementations. Tested, documented, maintained. No need to implement PPO from scratch.
-2. **Small policy network** [128, 64] — Only ~46K params for PPO. Lightweight for 4GB VRAM. Larger networks don't help with 47 stocks.
-3. **PPO primary, SAC comparison** — PPO is stable and good for continuous actions. SAC is more sample-efficient. Compare both in thesis.
-4. **PortfolioMetricsCallback** — Custom callback logs Sharpe/return/drawdown during training, not just loss.
+1. **5 algorithms** — PPO (stable), SAC (entropy), TD3 (delayed actor), A2C (fast), DDPG (deterministic). Each different bias-variance tradeoff.
+2. **Ensemble as meta-policy** — Averages weight vectors from all 5. Reduces single-model variance without retraining.
+3. **FinRL try/except** — Prevents hard dependency conflict with gymnasium. SB3 fallback identical behavior.
+4. **compare_agents backward compatible** — New `td3_model=None` kwargs, existing 2-arg calls still work.
 
-### Tests: 16/16 PASSING ✅
+### Tests: 30/30 PASSING ✅
 - PPO (3): creates, trains, predicts valid actions
 - SAC (3): creates, trains, predicts valid actions
+- TD3 (3): creates, trains, predicts valid actions
+- A2C (3): creates, trains, predicts valid actions
+- DDPG (3): creates, trains, predicts valid actions
+- EnsembleAgent (5): creates, shape check, finite output, weighted bias, 5-model compare
 - Evaluation (2): returns expected keys, finite metrics
 - Save/Load (2): PPO and SAC save → load → same predictions
 - Custom config (2): custom LR, custom architecture
@@ -602,49 +635,62 @@ QAOA Portfolio Selection:
 
 ---
 
-## PHASE 14: React Dashboard — ✅ DONE
+## PHASE 14: React Dashboard — ✅ DONE + Restructured (2026-04-22)
 
-### Kya Banaya (What)
+### Restructuring Summary
+- **10 pages → 6 pages**: Removed Overview (Portfolio duplicate), GnnInsights (GraphViz duplicate), NasLab (no product value), Quantum (dissertation scope)
+- **RL Agent upgraded**: PPO+SAC only → 5 algorithms + Ensemble (FinRL)
+- **Sentiment upgraded**: One-shot load → auto-refresh every 3 min + LIVE UI + localStorage trend
+
+### Kya Banaya / Kya Rakha (What)
 | File/Dir | Purpose | Status |
 |----------|---------|--------|
-| `dashboard/` | Full React dashboard app (Vite + TypeScript) | ✅ |
-| `src/components/layout/` | Sidebar, Header, DashboardLayout | ✅ |
+| `dashboard/` | React dashboard app (Vite + TypeScript) | ✅ |
+| `src/components/layout/Sidebar.tsx` | 6-item sidebar (was 10) | ✅ Updated |
 | `src/components/ui/` | Card, MetricCard, Badge, PageHeader | ✅ |
-| `src/components/charts/` | SparkLine, PerformanceChart, SectorDonut | ✅ |
-| `src/lib/` | API client, formatters (INR), animation presets | ✅ |
-| `src/pages/` (10 pages) | All dashboard views | ✅ |
+| `src/lib/api.ts` | API client with 6-algo RL types + AgentType export | ✅ Updated |
+| `src/pages/` (6 pages) | Portfolio, RlAgent, StressTesting, Federated, Sentiment, GraphVisualization | ✅ |
 
-### 10 Dashboard Pages
-| Page | Route | Kya Dikhata Hai |
-|------|-------|-----------------|
-| Overview | `/` | Portfolio value, Sharpe, Max DD, performance chart, sector donut, top holdings |
-| Portfolio | `/portfolio` | Detailed metrics from API, sector weights, full stock list |
-| GNN Insights | `/gnn` | Stock network SVG, attention heatmap, edge type legend |
-| RL Agent | `/rl` | PPO vs SAC reward curves, portfolio weights bar chart |
-| Stress Testing | `/stress` | Monte Carlo paths, VaR/CVaR gauges, scenario table (live API) |
-| NAS Lab | `/nas` | Architecture diagram, alpha convergence, NAS vs hand-designed |
-| Federated | `/fl` | FL convergence curves, client cards, fairness comparison |
-| Quantum | `/quantum` | QAOA circuit SVG, Sharpe comparison, weight bars (live API) |
-| Sentiment | `/sentiment` | Real-time FinBERT analysis, batch headlines, sector sentiment (live API) |
-| **Graph Viz** | `/graph` | **Interactive force-directed stock network — node size=RL weight, edges=sector/supply/correlation** |
+### 6 Dashboard Pages (Final)
+| Page | Route | Kya Dikhata Hai | Why Rakh |
+|------|-------|-----------------|----------|
+| **Portfolio** | `/` (home) | Sharpe, Sortino, Max DD, holdings, performance | Core product output |
+| **RL Agent** | `/rl` | 5 algos + Ensemble comparison, 6-line charts | FinRL upgrade, self-optimizing proof |
+| **Stress Testing** | `/stress` | Monte Carlo, VaR/CVaR, 4 crash scenarios | Risk validation, unique NIFTY50 |
+| **Federated** | `/fl` | FedAvg/FedProx, sector clients, DP-SGD privacy | Dissertation core ("Federated") |
+| **Sentiment** | `/sentiment` | Live FinBERT, auto-refresh, trend chart | Real-time + educational |
+| **Graph Viz** | `/graph` | Force-directed NIFTY50 network | Most unique — no market competitor |
+
+### Removed Pages (Why)
+| Removed | Reason |
+|---------|--------|
+| Overview | Same metrics as Portfolio, no additional value |
+| GNN Insights | Same data as Graph Viz in chart form — redundant |
+| NAS Lab | Internal ML tooling, no product/educational value |
+| Quantum | Dissertation heavy discussion risk (confirmed by user) |
+
+### RL Agent — New Features
+- **6 algorithm buttons** — PPO, SAC, TD3, A2C, DDPG, ★ Ensemble
+- **Comparison table** — 6 rows, click to select algorithm
+- **6-line reward curve** — Ensemble is thick green (#16A34A, strokeWidth=3)
+- **6-line cumulative returns** + Equal-Weight gray dashed baseline
+- **Ensemble explanation card** — explains why ensemble beats individual models
+- **`AgentType` + `ALGO_PREFIX` exported** from `api.ts` for type safety
+
+### Sentiment — Real-Time Features
+- **Auto-refresh**: `setInterval(loadNewsSentiment, 180_000)` — every 3 minutes
+- **LIVE badge**: Pulsing green dot + `useTimeAgo()` hook (updates every 1s)
+- **New headlines tracking**: `prevHeadlinesRef` + `Set<string>` diff, "+N new" badge
+- **Trend chart**: localStorage key `fqn_sentiment_history`, 48 points max (2.4h window)
+- **`ReferenceLine y={0}`** — Zero line on trend chart for Bullish/Bearish visual split
 
 ### Tech Stack
-- React 18 + TypeScript + Vite
-- Tailwind CSS (v2 Light & Warm Theme — terracotta #C15F3C primary)
-- Framer Motion (spring animations, scroll reveals)
-- Recharts (area, bar, line, pie charts)
+- React 19 + TypeScript + Vite
+- Tailwind CSS v4 (Light Warm Theme — terracotta `#C15F3C`)
+- Framer Motion (spring animations)
+- Recharts (area, bar, line, pie, with `isAnimationActive={false}` on multi-line charts)
 - Lucide React (icons)
-- react-countup (animated numbers)
-- Custom SVG force-directed graph (Graph Viz page)
-- API proxy: Vite dev server → FastAPI backend (:8000)
-
-### Key Decisions
-1. **React (NOT Next.js)** — No SSR needed for a dashboard. Simpler, lighter.
-2. **v2 Light Warm Theme** — White/cream bg, terracotta primary (#C15F3C), professional + warm.
-3. **Framer Motion** — Spring physics animations. Cards fade-slide on scroll, numbers count up.
-4. **Live API integration** — Sentiment, Stress Test, QAOA, Metrics pages call real FastAPI endpoints.
-5. **Custom force graph** — No Three.js dependency. Pure SVG + force simulation for stock network.
-6. **Indian number format** — ₹ symbol, Lakh/Crore system for all monetary values.
+- Custom SVG force-directed graph (Graph Viz)
 
 ---
 
@@ -667,14 +713,14 @@ QAOA Portfolio Selection:
 | 4 | 16/16 | 4/4 | Integration #1 | ✅ PASS |
 | 5 | 15/15 | 4/4 | - | ✅ PASS |
 | 6 | 17/17 | 6/6 | - | ✅ PASS |
-| 7 | 12/12 | 4/4 | - | ✅ PASS |
+| 7 | 24/24 | 6/6 | - | ✅ PASS (upgraded: TD3/A2C/DDPG/Ensemble added) |
 | 8-9 | 18/18 | 7/7 | Integration #2 | ✅ PASS |
 | 10 | 14/14 | 4/4 | - | ✅ PASS |
 | 11 | 13/13 | 4/4 | - | ✅ PASS |
 | 12 | 9/9 | 3/3 | - | ✅ PASS |
 | 13 | 10/10 | 5/5 | Integration #3 | ✅ PASS |
 | 14 | - | - | - | - |
-| **Total** | **183/183** | **49/49** | **3/3** | **232/232** |
+| **Total** | **195/195** | **55/55** | **3/3** | **246/246** |
 
 ---
 

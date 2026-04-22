@@ -31,6 +31,10 @@ from src.rl.environment import PortfolioEnv
 from src.rl.agent import (
     create_ppo_agent,
     create_sac_agent,
+    create_td3_agent,
+    create_a2c_agent,
+    create_ddpg_agent,
+    EnsembleAgent,
     train_agent,
     evaluate_agent,
     compare_agents,
@@ -261,3 +265,153 @@ class TestEdgeCases:
         )
         # metrics may be empty with short training, but no crash
         assert isinstance(metrics, list)
+
+
+# ===========================
+# New Algorithm Tests
+# ===========================
+
+class TestTD3Agent:
+    """TD3 — Twin Delayed DDPG (off-policy, continuous)."""
+
+    def test_td3_creates(self):
+        env = _make_env()
+        model = create_td3_agent(env, device='cpu')
+        assert model is not None
+        assert hasattr(model, 'predict')
+
+    def test_td3_trains(self):
+        env = _make_env()
+        model = create_td3_agent(env, device='cpu',
+                                  buffer_size=500, batch_size=32,
+                                  learning_starts=50)
+        model.learn(total_timesteps=200)
+
+    def test_td3_predicts(self):
+        env = _make_env()
+        model = create_td3_agent(env, device='cpu',
+                                  buffer_size=500, batch_size=32,
+                                  learning_starts=50)
+        model.learn(total_timesteps=200)
+        obs, _ = env.reset(seed=42)
+        action, _ = model.predict(obs, deterministic=True)
+        assert action.shape == (env.n_stocks,)
+        assert env.action_space.contains(action)
+
+
+class TestA2CAgent:
+    """A2C — Advantage Actor-Critic (on-policy, fast convergence)."""
+
+    def test_a2c_creates(self):
+        env = _make_env()
+        model = create_a2c_agent(env, device='cpu')
+        assert model is not None
+        assert hasattr(model, 'predict')
+
+    def test_a2c_trains(self):
+        env = _make_env()
+        model = create_a2c_agent(env, device='cpu')
+        model.learn(total_timesteps=200)
+
+    def test_a2c_predicts(self):
+        env = _make_env()
+        model = create_a2c_agent(env, device='cpu')
+        model.learn(total_timesteps=200)
+        obs, _ = env.reset(seed=42)
+        action, _ = model.predict(obs, deterministic=True)
+        assert action.shape == (env.n_stocks,)
+        assert env.action_space.contains(action)
+
+
+class TestDDPGAgent:
+    """DDPG — Deterministic Policy Gradient (off-policy)."""
+
+    def test_ddpg_creates(self):
+        env = _make_env()
+        model = create_ddpg_agent(env, device='cpu')
+        assert model is not None
+
+    def test_ddpg_trains(self):
+        env = _make_env()
+        model = create_ddpg_agent(env, device='cpu',
+                                   buffer_size=500, batch_size=32,
+                                   learning_starts=50)
+        model.learn(total_timesteps=200)
+
+    def test_ddpg_predicts(self):
+        env = _make_env()
+        model = create_ddpg_agent(env, device='cpu',
+                                   buffer_size=500, batch_size=32,
+                                   learning_starts=50)
+        model.learn(total_timesteps=200)
+        obs, _ = env.reset(seed=42)
+        action, _ = model.predict(obs, deterministic=True)
+        assert action.shape == (env.n_stocks,)
+        assert env.action_space.contains(action)
+
+
+class TestEnsembleAgent:
+    """EnsembleAgent — averages predictions from multiple trained models."""
+
+    def _trained_pair(self, n_stocks=5):
+        env = _make_env(n_stocks=n_stocks)
+        ppo = create_ppo_agent(env, device='cpu')
+        ppo.learn(total_timesteps=200)
+        sac = create_sac_agent(env, device='cpu',
+                               buffer_size=500, batch_size=32,
+                               learning_starts=50)
+        sac.learn(total_timesteps=200)
+        return env, ppo, sac
+
+    def test_ensemble_creates(self):
+        env, ppo, sac = self._trained_pair()
+        ensemble = EnsembleAgent([ppo, sac])
+        assert hasattr(ensemble, 'predict')
+        assert len(ensemble.models) == 2
+
+    def test_ensemble_predict_shape(self):
+        env, ppo, sac = self._trained_pair()
+        ensemble = EnsembleAgent([ppo, sac])
+        obs, _ = env.reset(seed=42)
+        action, _ = ensemble.predict(obs, deterministic=True)
+        assert action.shape == (env.n_stocks,)
+
+    def test_ensemble_predict_valid(self):
+        """Ensemble produces finite raw actions (PortfolioEnv applies softmax later)."""
+        env, ppo, sac = self._trained_pair()
+        ensemble = EnsembleAgent([ppo, sac])
+        obs, _ = env.reset(seed=42)
+        action, _ = ensemble.predict(obs, deterministic=True)
+        assert action.shape == (env.n_stocks,)
+        assert np.all(np.isfinite(action))  # no NaN/inf in output
+
+    def test_ensemble_weighted(self):
+        """Weighted ensemble output is closer to first model when weight=0.9."""
+        env, ppo, sac = self._trained_pair()
+        obs, _ = env.reset(seed=42)
+        ppo_action, _ = ppo.predict(obs, deterministic=True)
+        sac_action, _ = sac.predict(obs, deterministic=True)
+
+        ensemble = EnsembleAgent([ppo, sac], weights=[0.9, 0.1])
+        ens_action, _ = ensemble.predict(obs, deterministic=True)
+
+        # Ensemble should be closer to PPO (weight 0.9) than SAC (weight 0.1)
+        dist_to_ppo = np.linalg.norm(ens_action - ppo_action)
+        dist_to_sac = np.linalg.norm(ens_action - sac_action)
+        assert dist_to_ppo < dist_to_sac
+
+    def test_compare_agents_all_five(self):
+        """compare_agents with 5 models returns winner from all 5."""
+        env = _make_env()
+        ppo = create_ppo_agent(env, device='cpu'); ppo.learn(total_timesteps=200)
+        sac = create_sac_agent(env, device='cpu', buffer_size=500, batch_size=32, learning_starts=50); sac.learn(total_timesteps=200)
+        td3 = create_td3_agent(env, device='cpu', buffer_size=500, batch_size=32, learning_starts=50); td3.learn(total_timesteps=200)
+        a2c = create_a2c_agent(env, device='cpu'); a2c.learn(total_timesteps=200)
+        ddpg = create_ddpg_agent(env, device='cpu', buffer_size=500, batch_size=32, learning_starts=50); ddpg.learn(total_timesteps=200)
+
+        result = compare_agents(ppo, sac, env, n_episodes=2,
+                                td3_model=td3, a2c_model=a2c, ddpg_model=ddpg)
+        assert result['winner'] in ('PPO', 'SAC', 'TD3', 'A2C', 'DDPG')
+        assert 'td3' in result
+        assert 'a2c' in result
+        assert 'ddpg' in result

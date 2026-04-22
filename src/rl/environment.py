@@ -46,6 +46,17 @@ class PortfolioEnv(gym.Env):
         cfg_rl = get_config('rl')
         cfg_data = get_config('data')
 
+        if feature_tensor.shape[0] != price_tensor.shape[0]:
+            raise ValueError(
+                f'feature_tensor n_stocks ({feature_tensor.shape[0]}) != '
+                f'price_tensor n_stocks ({price_tensor.shape[0]})'
+            )
+        if feature_tensor.shape[1] != price_tensor.shape[1]:
+            raise ValueError(
+                f'feature_tensor n_timesteps ({feature_tensor.shape[1]}) != '
+                f'price_tensor n_timesteps ({price_tensor.shape[1]})'
+            )
+
         self.features = feature_tensor  # (n_stocks, n_timesteps, n_features)
         self.prices = price_tensor      # (n_stocks, n_timesteps)
         self.n_stocks = feature_tensor.shape[0]
