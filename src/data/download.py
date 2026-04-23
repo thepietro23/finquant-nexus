@@ -5,21 +5,17 @@ import time
 
 import pandas as pd
 
-# Fix SSL certificate issues (corporate/college proxy with self-signed certs)
-# Must be done BEFORE importing yfinance
+import yfinance as yf
+
+# Build a shared curl_cffi session that:
+#   1. Impersonates Chrome (bypasses Yahoo rate-limit bot detection)
+#   2. Disables SSL verification (college/corporate proxy with self-signed certs)
+_YF_SESSION = None
 try:
     from curl_cffi import requests as _curl_requests
-    _orig_init = _curl_requests.Session.__init__
-
-    def _patched_init(self, *args, **kwargs):
-        kwargs['verify'] = False
-        _orig_init(self, *args, **kwargs)
-
-    _curl_requests.Session.__init__ = _patched_init
+    _YF_SESSION = _curl_requests.Session(impersonate='chrome', verify=False)
 except ImportError:
     pass
-
-import yfinance as yf
 
 from src.data.stocks import get_all_tickers, NIFTY_INDEX
 from src.utils.config import get_config
@@ -36,7 +32,8 @@ def download_stock(ticker, start_date, end_date, retries=5, backoff=3.0):
     for attempt in range(retries):
         try:
             df = yf.download(ticker, start=start_date, end=end_date,
-                             progress=False, auto_adjust=False)
+                             progress=False, auto_adjust=False,
+                             session=_YF_SESSION)
             if df is None or df.empty:
                 wait = min(backoff ** attempt, 60)
                 logger.warning(f'{ticker}: empty/failed (attempt {attempt + 1}/{retries}). Waiting {wait:.0f}s')

@@ -4,6 +4,18 @@ Complete setup instructions to get this project running on a fresh system.
 
 ---
 
+## Quick Start (this machine)
+
+```bash
+# Backend — venv is broken on this machine, use system Python directly
+python -m uvicorn src.api.main:app --reload --port 8000
+
+# Frontend
+cd dashboard && npm run dev
+```
+
+> **Note:** The `venv` was created on a different PC. Do NOT use `venv\Scripts\activate` + bare `uvicorn` — use `python -m uvicorn` instead.
+
 ## Prerequisites
 
 | Tool | Version | Check Command |

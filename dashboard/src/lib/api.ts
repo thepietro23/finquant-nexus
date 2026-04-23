@@ -1,13 +1,34 @@
 /** FastAPI backend client — all endpoints from Phase 13 */
 
 const BASE = '/api';
+const TIMEOUT_MS = 30_000;
 
-async function fetchJSON<T>(url: string, opts?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE}${url}`, {
-    headers: { 'Content-Type': 'application/json' },
-    ...opts,
-  });
-  if (!res.ok) throw new Error(`API ${res.status}: ${res.statusText}`);
+async function fetchJSON<T>(url: string, opts?: RequestInit, timeoutMs = TIMEOUT_MS): Promise<T> {
+  const controller = new AbortController();
+  const timerId = setTimeout(() => controller.abort(), timeoutMs);
+
+  let res: Response;
+  try {
+    res = await fetch(`${BASE}${url}`, {
+      headers: { 'Content-Type': 'application/json' },
+      signal: controller.signal,
+      ...opts,
+    });
+  } catch (e) {
+    clearTimeout(timerId);
+    if (e instanceof DOMException && e.name === 'AbortError')
+      throw new Error(`Request timed out after ${timeoutMs / 1000}s — is the backend running?`);
+    throw e;
+  }
+  clearTimeout(timerId);
+
+  if (!res.ok) {
+    // Surface FastAPI's detail message instead of the generic statusText
+    const detail = await res.json()
+      .then((j: { detail?: string }) => j.detail ?? res.statusText)
+      .catch(() => res.statusText);
+    throw new Error(`API ${res.status}: ${detail}`);
+  }
   return res.json();
 }
 
@@ -36,8 +57,8 @@ export interface BatchSentimentResponse {
 }
 
 export interface ScenarioResult {
-  scenario: string; mean_return: string;
-  var_95: string; cvar_95: string; survival_rate: string;
+  scenario: string; mean_return: number;
+  var_95: number; cvar_95: number; survival_rate: number;
 }
 
 export interface StressTestResponse {
@@ -74,6 +95,15 @@ export interface PortfolioSummaryResponse {
   holdings: PortfolioHolding[];
   performance: PerformancePoint[];
   sector_weights: Record<string, number>;
+  data_as_of: string;
+  total_return_pct: number;
+}
+
+export interface DataRefreshResponse {
+  status: 'updated' | 'skipped' | 'error';
+  added_rows: number;
+  gap_days: number;
+  data_as_of: string;
 }
 
 // --- Stock Detail ---
@@ -246,8 +276,13 @@ export const api = {
       method: 'POST', body: JSON.stringify({ returns }),
     }),
 
-  portfolioSummary: () =>
-    fetchJSON<PortfolioSummaryResponse>('/portfolio-summary'),
+  portfolioSummary: (params?: { start_date?: string; end_date?: string }) => {
+    const qs = params ? '?' + new URLSearchParams(params as Record<string, string>).toString() : '';
+    return fetchJSON<PortfolioSummaryResponse>(`/portfolio-summary${qs}`);
+  },
+
+  refreshData: () =>
+    fetchJSON<DataRefreshResponse>('/refresh-data', undefined, 120_000),
 
   stockDetail: (ticker: string) =>
     fetchJSON<StockDetailResponse>(`/stock/${encodeURIComponent(ticker)}`),
@@ -264,8 +299,8 @@ export const api = {
   gnnSummary: () =>
     fetchJSON<GNNSummaryResponse>('/gnn-summary'),
 
-  newsSentiment: () =>
-    fetchJSON<NewsSentimentResponse>('/news-sentiment'),
+  newsSentiment: (force = false) =>
+    fetchJSON<NewsSentimentResponse>(`/news-sentiment${force ? '?force=true' : ''}`, undefined, 120_000),
 
   portfolioGrowth: (amount: number, start_date: string) =>
     fetchJSON<GrowthResponse>('/portfolio-growth', {

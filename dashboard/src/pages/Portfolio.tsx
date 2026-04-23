@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react';
-import { PieChart, AlertTriangle, TrendingUp, TrendingDown, X, Calculator, IndianRupee, ChevronDown, ChevronUp } from 'lucide-react';
+import { useEffect, useState, useRef } from 'react';
+import { PieChart, AlertTriangle, TrendingUp, TrendingDown, X, Calculator, IndianRupee, ChevronDown, ChevronUp, RefreshCw, Database } from 'lucide-react';
 import { MetricCardSkeleton, TableRowSkeleton, Skeleton } from '../components/ui/Skeleton';
 import { toast } from '../lib/toast';
 import {
@@ -9,7 +9,7 @@ import {
 } from 'recharts';
 import { motion, AnimatePresence } from 'framer-motion';
 import { api } from '../lib/api';
-import type { PortfolioSummaryResponse, StockDetailResponse, GrowthResponse } from '../lib/api';
+import type { PortfolioSummaryResponse, StockDetailResponse, GrowthResponse, DataRefreshResponse } from '../lib/api';
 import Card from '../components/ui/Card';
 import PageHeader from '../components/ui/PageHeader';
 import MetricCard from '../components/ui/MetricCard';
@@ -68,7 +68,7 @@ function getMetricDetails(data: PortfolioSummaryResponse): Record<string, Metric
       why: 'A 20% return sounds great — but if the volatility is 50%, you are riding a rollercoaster. Sharpe tells you the real truth: return per unit of risk.',
       how: 'Formula: (Portfolio Return − Risk-Free Rate) / Volatility. India risk-free rate = 7% (govt bonds). Annualized using 248 trading days.',
       good: '< 0 = losing money | 0–0.5 = average | 0.5–1.0 = good | 1.0–1.5 = very good | > 1.5 = exceptional (hedge fund level)',
-      interpret: `Your portfolio Sharpe is ${data.sharpe_ratio.toFixed(4)}. This means for every 1% of risk, you earn ${data.sharpe_ratio.toFixed(2)}% excess return above the 7% risk-free rate. Computed from ${data.n_stocks} real NIFTY 50 stocks with equal-weight allocation.`,
+      interpret: `Your portfolio Sharpe is ${data.sharpe_ratio.toFixed(4)}. This means for every 1% of risk, you earn ${data.sharpe_ratio.toFixed(2)}% excess return above the risk-free rate. Computed from ${data.n_stocks} real NIFTY 50 stocks with equal-weight allocation over ${data.n_days} trading days.`,
     },
     'Sortino Ratio': {
       what: 'Sortino Ratio is like Sharpe but smarter — it only considers downside risk (losses). Upside volatility (gains) is not penalized because gains are desirable.',
@@ -117,7 +117,7 @@ const PAGE_INFO = {
   sections: [
     {
       heading: 'What is this page?',
-      text: 'A complete breakdown of your NIFTY 50 portfolio with 44 real stocks. Data sourced from Yahoo Finance (2015-2025). Equal-weight allocation means each stock gets the same investment (₹1 Crore ÷ 44 ≈ ₹2.27 Lakh per stock).',
+      text: 'A complete breakdown of your NIFTY 50 portfolio. Data sourced from Yahoo Finance. Equal-weight allocation means each stock gets the same share of the total capital.',
     },
     {
       heading: 'What are the 5 metric cards?',
@@ -129,7 +129,7 @@ const PAGE_INFO = {
     },
     {
       heading: 'What is the Holdings table?',
-      text: 'All 44 stocks listed with ticker, sector, portfolio weight (%), and cumulative return. Green = profit, Red = loss. Sorted by return descending (best performers on top).',
+      text: 'All stocks listed with ticker, sector, portfolio weight (%), and cumulative return. Green = profit, Red = loss. Sorted by return descending (best performers on top).',
     },
     {
       heading: 'Where does the data come from?',
@@ -180,14 +180,76 @@ export default function Portfolio() {
   const [selectedStock, setSelectedStock] = useState<StockDetailResponse | null>(null);
   const [stockLoading, setStockLoading] = useState(false);
 
-  // simulator
-  const [simOpen, setSimOpen] = useState(false);
-  const [simInput, setSimInput] = useState('100000');
-  const [simResult, setSimResult] = useState<SimResult | null>(null);
-  const [simStockSort, setSimStockSort] = useState<'profit' | 'loss' | 'weight'>('profit');
-  const [startDate, setStartDate] = useState('2020-01-01');
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshStatus, setRefreshStatus] = useState<DataRefreshResponse | null>(null);
+
+  // Unified controls — one set of inputs drives everything
+  const [rangeStart, setRangeStart] = useState('');
+  const [rangeEnd,   setRangeEnd]   = useState('');
+  const [startingCapital, setStartingCapital] = useState(1_000_000);
+  const [capInput, setCapInput] = useState('10,00,000');
+  const [rangeLoading, setRangeLoading] = useState(false);
+
+  // Growth chart + breakdown (auto-populated on Apply)
   const [growthResult, setGrowthResult] = useState<GrowthResponse | null>(null);
   const [growthLoading, setGrowthLoading] = useState(false);
+  const [showBreakdown, setShowBreakdown] = useState(false);
+  const [simStockSort, setSimStockSort] = useState<'profit' | 'loss' | 'weight'>('profit');
+  const growthTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // simResult is always derived — no separate state needed
+  const simResult: SimResult | null = data ? runSimulation(startingCapital, data.holdings) : null;
+
+  function applyCapital(raw: string) {
+    const num = parseInt(raw.replace(/[^0-9]/g, ''), 10);
+    if (!isNaN(num) && num >= 1000) {
+      setStartingCapital(num);
+      setCapInput(num.toLocaleString('en-IN'));
+    }
+  }
+
+  const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+  function fetchRange(s: string, e: string) {
+    if (!s || !e || !ISO_DATE.test(s) || !ISO_DATE.test(e) || s >= e) {
+      toast.warning('Select a valid date range (From < To)');
+      return;
+    }
+    setRangeLoading(true);
+    setGrowthResult(null);
+
+    if (growthTimeoutRef.current) clearTimeout(growthTimeoutRef.current);
+    setGrowthLoading(true);
+    growthTimeoutRef.current = setTimeout(() => {
+      setGrowthLoading(false);
+      toast.error('Growth chart timed out — backend may be slow');
+    }, 40_000);
+
+    Promise.all([
+      api.portfolioSummary({ start_date: s, end_date: e }),
+      api.portfolioGrowth(startingCapital, s),
+    ])
+      .then(([summary, growth]) => {
+        setData(summary);
+        setGrowthResult(growth);
+        clearTimeout(growthTimeoutRef.current!);
+      })
+      .catch(err => toast.error(err instanceof Error ? err.message : 'Failed to load data'))
+      .finally(() => { setRangeLoading(false); setGrowthLoading(false); });
+  }
+
+  function handleRefresh() {
+    setRefreshing(true);
+    api.refreshData()
+      .then(r => {
+        setRefreshStatus(r);
+        if (r.status === 'updated') {
+          const params = rangeStart && rangeEnd ? { start_date: rangeStart, end_date: rangeEnd } : undefined;
+          return api.portfolioSummary(params).then(d => setData(d));
+        }
+      })
+      .catch(e => toast.error(e instanceof Error ? e.message : 'Refresh failed'))
+      .finally(() => setRefreshing(false));
+  }
 
   function handleStockClick(ticker: string) {
     if (selectedStock?.ticker === ticker.replace('.NS', '')) {
@@ -259,10 +321,120 @@ export default function Portfolio() {
       <div className="flex items-center justify-between">
         <PageHeader
           title="Portfolio Analysis"
-          subtitle={`${data.n_stocks} stocks — ${data.date_start} to ${data.date_end} (${data.n_days} trading days) — Real NIFTY 50 data`}
+          subtitle="NIFTY 50 portfolio — AI-optimized allocation with risk analysis"
           icon={<PieChart size={24} />}
         />
-        <PageInfoPanel title={PAGE_INFO.title} sections={PAGE_INFO.sections} />
+        <div className="flex items-center gap-3 shrink-0">
+          {/* Data freshness badge */}
+          <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-surface border border-border text-xs text-text-muted">
+            <Database size={12} />
+            <span>Data as of <span className="text-text font-medium">{data.data_as_of || data.date_end}</span></span>
+          </div>
+          {/* Refresh button */}
+          <button
+            onClick={handleRefresh}
+            disabled={refreshing}
+            title={refreshing ? 'Downloading latest prices…' : 'Fetch latest prices from Yahoo Finance'}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-surface border border-border text-xs text-text-muted hover:text-secondary hover:border-secondary transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            <RefreshCw size={12} className={refreshing ? 'animate-spin' : ''} />
+            <span>{refreshing ? 'Refreshing…' : refreshStatus?.status === 'updated' ? `+${refreshStatus.added_rows} rows` : 'Refresh Data'}</span>
+          </button>
+          <PageInfoPanel title={PAGE_INFO.title} sections={PAGE_INFO.sections} />
+        </div>
+      </div>
+
+      {/* ── Control Bar: Date Range + Starting Capital ── */}
+      <div className="flex flex-wrap items-end gap-3 my-4 p-4 rounded-xl bg-surface border border-border">
+        {/* Date Range */}
+        <div className="flex items-end gap-2">
+          <div className="flex flex-col gap-1">
+            <label className="text-xs text-text-muted font-medium">From</label>
+            <input
+              type="date"
+              value={rangeStart || data.date_start}
+              min={data.date_start}
+              max={rangeEnd || data.date_end}
+              onChange={e => setRangeStart(e.target.value)}
+              className="px-3 py-1.5 text-xs rounded-lg border border-border bg-background text-text focus:outline-none focus:border-secondary"
+            />
+          </div>
+          <div className="flex flex-col gap-1">
+            <label className="text-xs text-text-muted font-medium">To</label>
+            <input
+              type="date"
+              value={rangeEnd || data.date_end}
+              min={rangeStart || data.date_start}
+              max={data.date_end}
+              onChange={e => setRangeEnd(e.target.value)}
+              className="px-3 py-1.5 text-xs rounded-lg border border-border bg-background text-text focus:outline-none focus:border-secondary"
+            />
+          </div>
+          <button
+            onClick={() => fetchRange(rangeStart || data.date_start, rangeEnd || data.date_end)}
+            disabled={rangeLoading}
+            className="px-3 py-1.5 text-xs rounded-lg bg-secondary text-white font-medium hover:opacity-90 disabled:opacity-50 transition-opacity"
+          >
+            {rangeLoading ? 'Loading…' : 'Apply'}
+          </button>
+          <button
+            onClick={() => { setRangeStart(''); setRangeEnd(''); api.portfolioSummary().then(d => setData(d)); }}
+            className="px-3 py-1.5 text-xs rounded-lg border border-border text-text-muted hover:text-text transition-colors"
+          >
+            Reset
+          </button>
+        </div>
+
+        <div className="w-px h-8 bg-border hidden lg:block" />
+
+        {/* Starting Capital */}
+        <div className="flex items-end gap-2">
+          <div className="flex flex-col gap-1">
+            <label className="text-xs text-text-muted font-medium">Starting Capital</label>
+            <div className="relative">
+              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs text-text-muted">₹</span>
+              <input
+                type="text"
+                value={capInput}
+                onChange={e => setCapInput(e.target.value)}
+                onBlur={() => applyCapital(capInput)}
+                onKeyDown={e => e.key === 'Enter' && applyCapital(capInput)}
+                className="pl-6 pr-3 py-1.5 w-36 text-xs rounded-lg border border-border bg-background text-text focus:outline-none focus:border-secondary font-mono"
+              />
+            </div>
+          </div>
+          {/* Preset buttons */}
+          <div className="flex gap-1">
+            {[['1L', 100_000], ['10L', 1_000_000], ['50L', 5_000_000], ['1Cr', 10_000_000], ['5Cr', 50_000_000]].map(([label, val]) => (
+              <button
+                key={label}
+                onClick={() => { setStartingCapital(val as number); setCapInput((val as number).toLocaleString('en-IN')); }}
+                className={`px-2 py-1.5 text-xs rounded-lg border transition-colors ${startingCapital === val ? 'bg-secondary text-white border-secondary' : 'border-border text-text-muted hover:text-text'}`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="w-px h-8 bg-border hidden lg:block" />
+
+        {/* Live portfolio value */}
+        {(() => {
+          const ret = data.total_return_pct ?? 0;
+          const val = Math.round(startingCapital * (1 + ret / 100));
+          return (
+            <div className="flex flex-col gap-0.5 ml-auto">
+              <span className="text-xs text-text-muted">Portfolio Value</span>
+              <span className="text-lg font-bold font-mono text-secondary">
+                ₹{val.toLocaleString('en-IN')}
+              </span>
+              <span className={`text-xs font-mono ${ret >= 0 ? 'text-profit' : 'text-loss'}`}>
+                {ret >= 0 ? '+' : ''}{ret.toFixed(2)}% over period
+              </span>
+            </div>
+          );
+        })()}
       </div>
 
       {/* ── Clickable Metric Cards ── */}
@@ -499,325 +671,190 @@ export default function Portfolio() {
         )}
       </AnimatePresence>
 
-      {/* ── Investment Simulator ── */}
-      <Card className="mb-6">
-        <button
-          onClick={() => setSimOpen(o => !o)}
-          className="w-full flex items-center justify-between group"
-        >
-          <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-xl bg-primary-subtle flex items-center justify-center">
-              <Calculator size={18} className="text-primary" />
-            </div>
-            <div className="text-left">
-              <h2 className="font-display font-bold text-lg text-secondary">Investment Simulator</h2>
-              <p className="text-xs text-text-muted">Enter your amount — see exact ₹ breakdown per stock & sector</p>
-            </div>
-          </div>
-          {simOpen ? <ChevronUp size={18} className="text-text-muted" /> : <ChevronDown size={18} className="text-text-muted" />}
-        </button>
+      {/* ── Portfolio Results — auto-populated when Apply is clicked ── */}
+      {simResult && (
+        <div className="space-y-6 mb-6">
 
-        <AnimatePresence>
-          {simOpen && (
-            <motion.div
-              initial={{ height: 0, opacity: 0 }}
-              animate={{ height: 'auto', opacity: 1 }}
-              exit={{ height: 0, opacity: 0 }}
-              transition={{ type: 'spring', stiffness: 220, damping: 26 }}
-              className="overflow-hidden"
-            >
-              <div className="mt-5">
-                {/* Input row */}
-                <div className="flex flex-wrap gap-3 items-end mb-6">
-                  <div className="flex-1 min-w-[200px]">
-                    <label className="text-xs font-medium text-text-secondary mb-1.5 block">
-                      Total Investment Amount
-                    </label>
-                    <div className="relative">
-                      <IndianRupee size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-text-muted" />
-                      <input
-                        type="number"
-                        min={1000}
-                        step={1000}
-                        value={simInput}
-                        onChange={e => setSimInput(e.target.value)}
-                        className="w-full pl-8 pr-4 py-2.5 border border-border rounded-xl text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary bg-bg-card"
-                        placeholder="e.g. 100000"
-                      />
+          {/* Summary cards */}
+          <Card>
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="font-display font-bold text-lg text-secondary flex items-center gap-2">
+                <Calculator size={18} className="text-primary" /> Portfolio Simulation
+              </h2>
+              <span className="text-xs text-text-muted">
+                {data.date_start} → {data.date_end} · {data.n_days} trading days
+              </span>
+            </div>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              {[
+                { label: 'Invested', val: fmt(simResult.totalInvested), color: 'text-text', bg: 'bg-bg-card border-border-light' },
+                { label: 'Current Value', val: fmt(simResult.totalValue), color: simResult.totalProfit >= 0 ? 'text-profit' : 'text-loss', bg: simResult.totalProfit >= 0 ? 'bg-profit/5 border-profit/20' : 'bg-loss/5 border-loss/20' },
+                { label: 'Total P&L', val: `${simResult.totalProfit >= 0 ? '+' : ''}${fmt(simResult.totalProfit)}`, color: simResult.totalProfit >= 0 ? 'text-profit' : 'text-loss', bg: simResult.totalProfit >= 0 ? 'bg-profit/5 border-profit/20' : 'bg-loss/5 border-loss/20' },
+                { label: 'Return %', val: `${simResult.totalReturnPct >= 0 ? '+' : ''}${simResult.totalReturnPct.toFixed(2)}%`, color: simResult.totalReturnPct >= 0 ? 'text-profit' : 'text-loss', bg: simResult.totalReturnPct >= 0 ? 'bg-profit/5 border-profit/20' : 'bg-loss/5 border-loss/20' },
+              ].map(c => (
+                <div key={c.label} className={`rounded-xl px-4 py-3 border ${c.bg}`}>
+                  <p className="text-[10px] uppercase tracking-wider text-text-muted font-medium mb-1">{c.label}</p>
+                  <p className={`font-mono font-bold text-base ${c.color}`}>{c.val}</p>
+                </div>
+              ))}
+            </div>
+          </Card>
+
+          {/* Growth Chart */}
+          <Card>
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="font-display font-bold text-lg text-secondary flex items-center gap-2">
+                <TrendingUp size={18} className="text-primary" /> Growth Chart
+              </h2>
+              {growthResult && <span className="text-xs text-text-muted">{growthResult.n_days} trading days</span>}
+            </div>
+
+            {growthLoading && (
+              <div className="flex items-center gap-2 py-8 text-sm text-text-muted justify-center">
+                <svg className="animate-spin h-4 w-4 text-primary" viewBox="0 0 24 24" fill="none">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/>
+                </svg>
+                Loading growth data…
+              </div>
+            )}
+
+            {!growthResult && !growthLoading && (
+              <p className="text-sm text-text-muted text-center py-8">
+                Select a date range and click <strong>Apply</strong> to see growth chart (Portfolio vs NIFTY vs FD)
+              </p>
+            )}
+
+            {growthResult && !growthLoading && (
+              <>
+                <div className="grid grid-cols-3 gap-3 mb-4">
+                  {[
+                    { label: 'Our Portfolio', final: growthResult.final_portfolio, ret: growthResult.portfolio_return_pct, profit: growthResult.portfolio_profit, color: '#C15F3C' },
+                    { label: 'NIFTY 50 Index', final: growthResult.final_nifty,    ret: growthResult.nifty_return_pct,    profit: growthResult.nifty_profit,    color: '#6366F1' },
+                    { label: 'Fixed Deposit (7%)', final: growthResult.final_fd,   ret: growthResult.fd_return_pct,       profit: growthResult.fd_profit,       color: '#10B981' },
+                  ].map(c => (
+                    <div key={c.label} className="bg-bg-card rounded-xl px-3 py-3 border border-border-light">
+                      <div className="flex items-center gap-1.5 mb-1">
+                        <div className="w-2.5 h-2.5 rounded-full" style={{ background: c.color }} />
+                        <p className="text-[10px] font-medium text-text-muted">{c.label}</p>
+                      </div>
+                      <p className="font-mono font-bold text-sm text-text">{fmt(c.final)}</p>
+                      <p className={`font-mono text-xs mt-0.5 ${c.profit >= 0 ? 'text-profit' : 'text-loss'}`}>
+                        {c.profit >= 0 ? '+' : ''}{fmt(c.profit)} ({c.ret >= 0 ? '+' : ''}{c.ret}%)
+                      </p>
+                    </div>
+                  ))}
+                </div>
+                <ResponsiveContainer width="100%" height={240} minHeight={1}>
+                  <LineChart data={growthResult.series} margin={{ top: 5, right: 5, bottom: 0, left: 10 }}>
+                    <CartesianGrid stroke="#F3F4F6" strokeDasharray="3 3" vertical={false} />
+                    <XAxis dataKey="date" tick={{ fontSize: 10, fill: '#9CA3AF' }} axisLine={false} tickLine={false}
+                      tickFormatter={d => d.slice(0, 7)} interval={Math.floor(growthResult.series.length / 6)} />
+                    <YAxis tick={{ fontSize: 10, fill: '#9CA3AF' }} axisLine={false} tickLine={false}
+                      tickFormatter={v => `₹${(v / 1000).toFixed(0)}K`} />
+                    <Tooltip contentStyle={{ background: '#fff', border: '1px solid #E5E7EB', borderRadius: 12, fontSize: 12 }}
+                      formatter={(v, name) => [`₹${Math.round(Number(v)).toLocaleString('en-IN')}`, name === 'portfolio_value' ? 'Our Portfolio' : name === 'nifty_value' ? 'NIFTY 50' : 'FD (7%)']}
+                      labelFormatter={d => `Date: ${d}`} />
+                    <ReferenceLine y={growthResult.amount} stroke="#9CA3AF" strokeDasharray="4 4"
+                      label={{ value: 'Invested', position: 'left', fontSize: 10, fill: '#9CA3AF' }} />
+                    <Legend formatter={v => v === 'portfolio_value' ? 'Our Portfolio' : v === 'nifty_value' ? 'NIFTY 50' : 'FD (7%)'} />
+                    <Line type="monotone" dataKey="portfolio_value" stroke="#C15F3C" strokeWidth={2} dot={false} animationDuration={600} />
+                    <Line type="monotone" dataKey="nifty_value"     stroke="#6366F1" strokeWidth={2} dot={false} animationDuration={600} />
+                    <Line type="monotone" dataKey="fd_value"        stroke="#10B981" strokeWidth={1.5} strokeDasharray="4 4" dot={false} animationDuration={600} />
+                  </LineChart>
+                </ResponsiveContainer>
+              </>
+            )}
+          </Card>
+
+          {/* Per-stock breakdown — collapsible */}
+          <Card>
+            <button onClick={() => setShowBreakdown(o => !o)} className="w-full flex items-center justify-between">
+              <h2 className="font-display font-bold text-lg text-secondary flex items-center gap-2">
+                <IndianRupee size={18} className="text-primary" /> Per-Stock Breakdown
+              </h2>
+              <div className="flex items-center gap-3">
+                <span className="text-xs text-text-muted">{simResult.perStock.length} stocks</span>
+                {showBreakdown ? <ChevronUp size={16} className="text-text-muted" /> : <ChevronDown size={16} className="text-text-muted" />}
+              </div>
+            </button>
+
+            <AnimatePresence>
+              {showBreakdown && (
+                <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }}
+                  exit={{ height: 0, opacity: 0 }} transition={{ type: 'spring', stiffness: 220, damping: 26 }}
+                  className="overflow-hidden">
+                  <div className="mt-4">
+                    {/* Sector summary row */}
+                    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2 mb-4">
+                      {Object.entries(simResult.bySector).sort((a, b) => b[1].invested - a[1].invested).map(([sector, s]) => (
+                        <div key={sector} className="bg-bg-card rounded-xl px-3 py-2.5 border border-border-light">
+                          <p className="text-[10px] font-medium text-text-muted truncate mb-1">{sector}</p>
+                          <p className="font-mono text-xs font-bold text-text">{fmt(s.invested)}</p>
+                          <p className={`font-mono text-xs mt-0.5 ${s.profit >= 0 ? 'text-profit' : 'text-loss'}`}>
+                            {s.profit >= 0 ? '+' : ''}{fmt(s.profit)}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* Sort controls */}
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-xs text-text-muted">All {simResult.perStock.length} stocks</span>
+                      <div className="flex gap-1.5">
+                        {(['profit', 'loss', 'weight'] as const).map(s => (
+                          <button key={s} onClick={() => setSimStockSort(s)}
+                            className={`px-2.5 py-1 rounded-lg text-xs font-medium border transition-all ${
+                              simStockSort === s ? 'bg-primary text-white border-primary' : 'bg-bg-card border-border text-text-muted hover:border-primary'
+                            }`}>
+                            {s === 'profit' ? 'Top Gainers' : s === 'loss' ? 'Top Losers' : 'By Weight'}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="max-h-72 overflow-y-auto rounded-xl border border-border-light">
+                      <table className="w-full text-sm">
+                        <thead className="sticky top-0 bg-white border-b border-border">
+                          <tr>
+                            <th className="text-left py-2 px-3 font-medium text-text-secondary">#</th>
+                            <th className="text-left py-2 px-3 font-medium text-text-secondary">Stock</th>
+                            <th className="text-left py-2 px-3 font-medium text-text-secondary hidden sm:table-cell">Sector</th>
+                            <th className="text-right py-2 px-3 font-medium text-text-secondary">Invested</th>
+                            <th className="text-right py-2 px-3 font-medium text-text-secondary">Value</th>
+                            <th className="text-right py-2 px-3 font-medium text-text-secondary">P&amp;L</th>
+                            <th className="text-right py-2 px-3 font-medium text-text-secondary">Ret%</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {[...simResult.perStock]
+                            .sort((a, b) => simStockSort === 'profit' ? b.profit - a.profit : simStockSort === 'loss' ? a.profit - b.profit : b.weight - a.weight)
+                            .map((s, i) => (
+                              <tr key={s.ticker} className="border-b border-border-light hover:bg-bg-card transition-colors">
+                                <td className="py-2 px-3 text-text-muted font-mono text-xs">{i + 1}</td>
+                                <td className="py-2 px-3 font-mono font-semibold text-text text-xs">{s.ticker}</td>
+                                <td className="py-2 px-3 text-text-secondary text-xs hidden sm:table-cell">{s.sector}</td>
+                                <td className="py-2 px-3 text-right font-mono text-xs text-text">{fmt(s.invested)}</td>
+                                <td className="py-2 px-3 text-right font-mono text-xs text-text">{fmt(s.currentValue)}</td>
+                                <td className={`py-2 px-3 text-right font-mono font-semibold text-xs ${s.profit >= 0 ? 'text-profit' : 'text-loss'}`}>
+                                  {s.profit >= 0 ? '+' : ''}{fmt(s.profit)}
+                                </td>
+                                <td className={`py-2 px-3 text-right font-mono text-xs ${s.returnPct >= 0 ? 'text-profit' : 'text-loss'}`}>
+                                  {s.returnPct >= 0 ? '+' : ''}{s.returnPct.toFixed(1)}%
+                                </td>
+                              </tr>
+                            ))}
+                        </tbody>
+                      </table>
                     </div>
                   </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </Card>
 
-                  {/* Quick presets */}
-                  <div className="flex gap-2 flex-wrap">
-                    {[10000, 50000, 100000, 500000, 1000000].map(amt => (
-                      <button key={amt}
-                        onClick={() => setSimInput(String(amt))}
-                        className={`px-3 py-2 rounded-xl text-xs font-mono font-medium border transition-all ${
-                          simInput === String(amt)
-                            ? 'bg-primary text-white border-primary'
-                            : 'bg-bg-card border-border text-text-secondary hover:border-primary hover:text-primary'
-                        }`}
-                      >
-                        {amt >= 100000 ? `₹${amt / 100000}L` : `₹${amt / 1000}K`}
-                      </button>
-                    ))}
-                  </div>
-
-                  {/* Date picker */}
-                  <div>
-                    <label className="text-xs font-medium text-text-secondary mb-1.5 block">
-                      Invest From Date
-                    </label>
-                    <input
-                      type="date"
-                      value={startDate}
-                      min="2015-01-01"
-                      max="2024-12-31"
-                      onChange={e => setStartDate(e.target.value)}
-                      className="px-3 py-2.5 border border-border rounded-xl text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary bg-bg-card"
-                    />
-                  </div>
-
-                  <button
-                    onClick={() => {
-                      const amt = parseFloat(simInput);
-                      if (!isNaN(amt) && amt >= 1000 && data) {
-                        const result = runSimulation(amt, data.holdings);
-                        setSimResult(result);
-                      } else if (isNaN(amt) || amt < 1000) {
-                        toast.warning('Enter a valid amount (min ₹1,000)');
-                      }
-                    }}
-                    className="px-5 py-2.5 bg-primary text-white rounded-xl text-sm font-medium hover:bg-primary/90 transition-colors flex items-center gap-2"
-                  >
-                    <Calculator size={15} /> Calculate
-                  </button>
-
-                  <button
-                    onClick={() => {
-                      const amt = parseFloat(simInput);
-                      if (!isNaN(amt) && amt >= 1000 && startDate) {
-                        setGrowthLoading(true);
-                        setGrowthResult(null);
-                        api.portfolioGrowth(amt, startDate)
-                          .then(d => { setGrowthResult(d); setGrowthLoading(false); })
-                          .catch(() => { setGrowthLoading(false); toast.error('Growth chart failed'); });
-                      }
-                    }}
-                    className="px-5 py-2.5 bg-secondary text-white rounded-xl text-sm font-medium hover:bg-secondary/90 transition-colors flex items-center gap-2"
-                  >
-                    <TrendingUp size={15} /> Growth Chart
-                  </button>
-
-                  {(simResult || growthResult) && (
-                    <button onClick={() => { setSimResult(null); setGrowthResult(null); }}
-                      className="px-3 py-2.5 rounded-xl border border-border text-text-muted hover:text-loss hover:border-loss transition-colors text-sm">
-                      <X size={15} />
-                    </button>
-                  )}
-                </div>
-
-                {/* Results */}
-                <AnimatePresence>
-                  {(simResult || growthResult) && (
-                    <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}>
-
-                      {/* Summary cards — use growthResult when available (date-accurate), else simResult (1-yr) */}
-                      {(() => {
-                        type Tint = 'profit' | 'loss' | 'neutral';
-                        const mk = (label: string, value: string, color: string, tint: Tint) => ({ label, value, color, tint });
-                        const cards = growthResult
-                          ? [
-                              mk('Invested', fmt(growthResult.amount), 'text-text', 'neutral'),
-                              mk(`Value (${growthResult.start_date} → today)`, fmt(growthResult.final_portfolio), growthResult.portfolio_profit >= 0 ? 'text-profit' : 'text-loss', growthResult.portfolio_profit >= 0 ? 'profit' : 'loss'),
-                              mk('Total Profit / Loss', `${growthResult.portfolio_profit >= 0 ? '+' : ''}${fmt(growthResult.portfolio_profit)}`, growthResult.portfolio_profit >= 0 ? 'text-profit' : 'text-loss', growthResult.portfolio_profit >= 0 ? 'profit' : 'loss'),
-                              mk('Return %', `${growthResult.portfolio_return_pct >= 0 ? '+' : ''}${growthResult.portfolio_return_pct.toFixed(2)}%`, growthResult.portfolio_return_pct >= 0 ? 'text-profit' : 'text-loss', growthResult.portfolio_return_pct >= 0 ? 'profit' : 'loss'),
-                            ]
-                          : simResult
-                          ? [
-                              mk('Invested', fmt(simResult.totalInvested), 'text-text', 'neutral'),
-                              mk('Value (last 1 year)', fmt(simResult.totalValue), simResult.totalProfit >= 0 ? 'text-profit' : 'text-loss', simResult.totalProfit >= 0 ? 'profit' : 'loss'),
-                              mk('Profit / Loss (1yr)', `${simResult.totalProfit >= 0 ? '+' : ''}${fmt(simResult.totalProfit)}`, simResult.totalProfit >= 0 ? 'text-profit' : 'text-loss', simResult.totalProfit >= 0 ? 'profit' : 'loss'),
-                              mk('Return % (1yr)', `${simResult.totalReturnPct >= 0 ? '+' : ''}${simResult.totalReturnPct.toFixed(2)}%`, simResult.totalReturnPct >= 0 ? 'text-profit' : 'text-loss', simResult.totalReturnPct >= 0 ? 'profit' : 'loss'),
-                            ]
-                          : [];
-                        const tintCls: Record<Tint, string> = {
-                          profit:  'bg-gradient-to-br from-profit/[0.08] to-transparent border-profit/25',
-                          loss:    'bg-gradient-to-br from-loss/[0.08] to-transparent border-loss/25',
-                          neutral: 'bg-bg-card border-border-light',
-                        };
-                        return (
-                          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-5">
-                            {cards.map((c, idx) => (
-                              <motion.div
-                                key={c.label}
-                                initial={{ opacity: 0, y: 8 }}
-                                animate={{ opacity: 1, y: 0 }}
-                                transition={{ delay: idx * 0.06, type: 'spring', stiffness: 200, damping: 20 }}
-                                className={`rounded-xl px-4 py-3 border ${tintCls[c.tint]}`}
-                              >
-                                <p className="text-[10px] uppercase tracking-wider text-text-muted font-medium mb-0.5">{c.label}</p>
-                                <p className={`font-mono font-bold text-base ${c.color}`}>{c.value}</p>
-                              </motion.div>
-                            ))}
-                          </div>
-                        );
-                      })()}
-                      {!growthResult && simResult && (
-                        <p className="text-xs text-text-muted mb-4 -mt-2">
-                          ℹ️ These values use last 1-year returns. Click <strong>Growth Chart</strong> to see returns from your selected date.
-                        </p>
-                      )}
-
-                      {/* ── Growth Chart ── */}
-                      <AnimatePresence>
-                        {growthLoading && (
-                          <div className="flex items-center gap-2 py-4 text-sm text-text-secondary">
-                            <svg className="animate-spin h-4 w-4 text-primary" viewBox="0 0 24 24" fill="none">
-                              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
-                              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/>
-                            </svg>
-                            Fetching 10 years of market data...
-                          </div>
-                        )}
-                        {growthResult && !growthLoading && (
-                          <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} className="mb-5">
-                            <div className="flex items-center justify-between mb-3">
-                              <h3 className="text-sm font-semibold text-text-secondary">
-                                ₹ Growth Over Time — from {growthResult.start_date} to {growthResult.end_date}
-                              </h3>
-                              <span className="text-xs text-text-muted">{growthResult.n_days} trading days</span>
-                            </div>
-
-                            {/* Final value comparison */}
-                            <div className="grid grid-cols-3 gap-3 mb-4">
-                              {[
-                                { label: 'Our Portfolio', final: growthResult.final_portfolio, ret: growthResult.portfolio_return_pct, profit: growthResult.portfolio_profit, color: '#C15F3C' },
-                                { label: 'NIFTY 50 Index', final: growthResult.final_nifty, ret: growthResult.nifty_return_pct, profit: growthResult.nifty_profit, color: '#6366F1' },
-                                { label: 'Fixed Deposit (7%)', final: growthResult.final_fd, ret: growthResult.fd_return_pct, profit: growthResult.fd_profit, color: '#10B981' },
-                              ].map(c => (
-                                <div key={c.label} className="bg-bg-card rounded-xl px-3 py-3 border border-border-light">
-                                  <div className="flex items-center gap-1.5 mb-1">
-                                    <div className="w-2.5 h-2.5 rounded-full" style={{ background: c.color }} />
-                                    <p className="text-[10px] font-medium text-text-muted">{c.label}</p>
-                                  </div>
-                                  <p className="font-mono font-bold text-sm text-text">{fmt(c.final)}</p>
-                                  <p className={`font-mono text-xs mt-0.5 ${c.profit >= 0 ? 'text-profit' : 'text-loss'}`}>
-                                    {c.profit >= 0 ? '+' : ''}{fmt(c.profit)} ({c.ret >= 0 ? '+' : ''}{c.ret}%)
-                                  </p>
-                                </div>
-                              ))}
-                            </div>
-
-                            {/* Line chart */}
-                            <ResponsiveContainer width="100%" height={240} minHeight={1}>
-                              <LineChart data={growthResult.series} margin={{ top: 5, right: 5, bottom: 0, left: 10 }}>
-                                <CartesianGrid stroke="#F3F4F6" strokeDasharray="3 3" vertical={false} />
-                                <XAxis dataKey="date" tick={{ fontSize: 10, fill: '#9CA3AF' }} axisLine={false} tickLine={false}
-                                  tickFormatter={d => d.slice(0, 7)} interval={Math.floor(growthResult.series.length / 6)} />
-                                <YAxis tick={{ fontSize: 10, fill: '#9CA3AF' }} axisLine={false} tickLine={false}
-                                  tickFormatter={v => `₹${(v / 1000).toFixed(0)}K`} />
-                                <Tooltip
-                                  contentStyle={{ background: '#fff', border: '1px solid #E5E7EB', borderRadius: 12, fontSize: 12 }}
-                                  formatter={(v, name) => [
-                                    `₹${Math.round(Number(v)).toLocaleString('en-IN')}`,
-                                    name === 'portfolio_value' ? 'Our Portfolio' : name === 'nifty_value' ? 'NIFTY 50' : 'FD (7%)'
-                                  ]}
-                                  labelFormatter={d => `Date: ${d}`}
-                                />
-                                <ReferenceLine y={growthResult.amount} stroke="#9CA3AF" strokeDasharray="4 4" label={{ value: 'Invested', position: 'left', fontSize: 10, fill: '#9CA3AF' }} />
-                                <Legend formatter={v => v === 'portfolio_value' ? 'Our Portfolio' : v === 'nifty_value' ? 'NIFTY 50' : 'FD (7%)'} />
-                                <Line type="monotone" dataKey="portfolio_value" stroke="#C15F3C" strokeWidth={2} dot={false} animationDuration={600} />
-                                <Line type="monotone" dataKey="nifty_value" stroke="#6366F1" strokeWidth={2} dot={false} animationDuration={600} />
-                                <Line type="monotone" dataKey="fd_value" stroke="#10B981" strokeWidth={1.5} strokeDasharray="4 4" dot={false} animationDuration={600} />
-                              </LineChart>
-                            </ResponsiveContainer>
-                          </motion.div>
-                        )}
-                      </AnimatePresence>
-
-                      {/* Sector + per-stock: only when simResult available (1-year breakdown) */}
-                      {simResult && (
-                        <>
-                          <h3 className="text-sm font-semibold text-text-secondary mb-2">Sector Breakdown (1-year)</h3>
-                          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2 mb-5">
-                            {Object.entries(simResult.bySector)
-                              .sort((a, b) => b[1].invested - a[1].invested)
-                              .map(([sector, s]) => (
-                                <div key={sector} className="bg-bg-card rounded-xl px-3 py-2.5 border border-border-light">
-                                  <p className="text-[10px] font-medium text-text-muted truncate mb-1">{sector}</p>
-                                  <p className="font-mono text-xs font-bold text-text">{fmt(s.invested)}</p>
-                                  <p className={`font-mono text-xs mt-0.5 ${s.profit >= 0 ? 'text-profit' : 'text-loss'}`}>
-                                    {s.profit >= 0 ? '+' : ''}{fmt(s.profit)}
-                                  </p>
-                                </div>
-                              ))}
-                          </div>
-
-                          <div className="flex items-center justify-between mb-2">
-                            <h3 className="text-sm font-semibold text-text-secondary">Per-Stock Breakdown (1-year)</h3>
-                            <div className="flex gap-1.5">
-                              {(['profit', 'loss', 'weight'] as const).map(s => (
-                                <button key={s}
-                                  onClick={() => setSimStockSort(s)}
-                                  className={`px-2.5 py-1 rounded-lg text-xs font-medium border transition-all ${
-                                    simStockSort === s ? 'bg-primary text-white border-primary' : 'bg-bg-card border-border text-text-muted hover:border-primary'
-                                  }`}>
-                                  {s === 'profit' ? 'Top Gainers' : s === 'loss' ? 'Top Losers' : 'By Weight'}
-                                </button>
-                              ))}
-                            </div>
-                          </div>
-
-                          <div className="max-h-72 overflow-y-auto rounded-xl border border-border-light">
-                            <table className="w-full text-sm">
-                              <thead className="sticky top-0 bg-white border-b border-border">
-                                <tr>
-                                  <th className="text-left py-2 px-3 font-medium text-text-secondary">#</th>
-                                  <th className="text-left py-2 px-3 font-medium text-text-secondary">Stock</th>
-                                  <th className="text-left py-2 px-3 font-medium text-text-secondary hidden sm:table-cell">Sector</th>
-                                  <th className="text-right py-2 px-3 font-medium text-text-secondary">Invested</th>
-                                  <th className="text-right py-2 px-3 font-medium text-text-secondary">Value</th>
-                                  <th className="text-right py-2 px-3 font-medium text-text-secondary">P&amp;L</th>
-                                  <th className="text-right py-2 px-3 font-medium text-text-secondary">Ret%</th>
-                                </tr>
-                              </thead>
-                              <tbody>
-                                {[...simResult.perStock]
-                                  .sort((a, b) =>
-                                    simStockSort === 'profit' ? b.profit - a.profit :
-                                    simStockSort === 'loss' ? a.profit - b.profit :
-                                    b.weight - a.weight
-                                  )
-                                  .map((s, i) => (
-                                    <tr key={s.ticker} className="border-b border-border-light hover:bg-bg-card transition-colors">
-                                      <td className="py-2 px-3 text-text-muted font-mono text-xs">{i + 1}</td>
-                                      <td className="py-2 px-3 font-mono font-semibold text-text text-xs">{s.ticker}</td>
-                                      <td className="py-2 px-3 text-text-secondary text-xs hidden sm:table-cell">{s.sector}</td>
-                                      <td className="py-2 px-3 text-right font-mono text-xs text-text">{fmt(s.invested)}</td>
-                                      <td className="py-2 px-3 text-right font-mono text-xs text-text">{fmt(s.currentValue)}</td>
-                                      <td className={`py-2 px-3 text-right font-mono font-semibold text-xs ${s.profit >= 0 ? 'text-profit' : 'text-loss'}`}>
-                                        {s.profit >= 0 ? '+' : ''}{fmt(s.profit)}
-                                      </td>
-                                      <td className={`py-2 px-3 text-right font-mono text-xs ${s.returnPct >= 0 ? 'text-profit' : 'text-loss'}`}>
-                                        {s.returnPct >= 0 ? '+' : ''}{s.returnPct.toFixed(1)}%
-                                      </td>
-                                    </tr>
-                                  ))}
-                              </tbody>
-                            </table>
-                          </div>
-                        </>
-                      )}
-
-                    </motion.div>
-                  )}
-                </AnimatePresence>
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-      </Card>
+        </div>
+      )}
     </div>
   );
 }

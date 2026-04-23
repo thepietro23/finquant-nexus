@@ -10,8 +10,8 @@ import {
   CartesianGrid, Tooltip, Legend, BarChart, Bar, Cell,
   Line, PieChart, Pie,
 } from 'recharts';
-import { api } from '../lib/api';
-import type { RLSummaryResponse } from '../lib/api';
+import { api, ALGO_PREFIX } from '../lib/api';
+import type { RLSummaryResponse, AgentType } from '../lib/api';
 import Card from '../components/ui/Card';
 import MetricCard from '../components/ui/MetricCard';
 import PageHeader from '../components/ui/PageHeader';
@@ -45,12 +45,12 @@ function getRLBadge(metric: 'sharpe' | 'reward' | 'drawdown', value: number): Me
 const PAGE_INFO = {
   title: 'RL Agent Monitor — What Does This Page Show?',
   sections: [
-    { heading: 'What is this page?', text: 'Monitors two Deep Reinforcement Learning agents (PPO and SAC) that learn to manage a stock portfolio by trial-and-error on real NIFTY 50 price data (2015-2021 train, 2022-2023 validation).' },
-    { heading: 'PPO vs SAC', text: 'PPO (Proximal Policy Optimization) is stable, clipped updates prevent catastrophic forgetting. SAC (Soft Actor-Critic) uses entropy bonus for better exploration in continuous action spaces. Both are state-of-the-art.' },
-    { heading: 'Training reward curve', text: 'Shows Sharpe Ratio per episode. An episode = 252 trading days (1 year). Upward trend = agent is learning better allocation. Compare PPO vs SAC convergence speed.' },
-    { heading: 'Cumulative returns', text: 'Portfolio growth on validation data (2022-2023). Compares PPO, SAC, and equal-weight baseline. Shows real out-of-sample performance — data the agent never trained on.' },
-    { heading: 'Sector allocation', text: 'How the agent distributes across sectors. Concentrated = high conviction. Diversified = risk management. Compare PPO vs SAC sector preferences.' },
-    { heading: 'Constraints', text: 'Max 20% per stock (diversification), -5% stop loss, -15% circuit breaker, 0.1% transaction cost + 0.05% slippage. These are real Indian market constraints.' },
+    { heading: 'What is this page?', text: 'Compares 5 Deep RL algorithms (PPO, SAC, TD3, A2C, DDPG) + an Ensemble that learns to manage a NIFTY 50 portfolio by trial-and-error on real price data. Each algorithm uses a distinct investment strategy.' },
+    { heading: '5 Algorithms', text: 'PPO: momentum blend with diversification. SAC: soft momentum, forced spread (max 8% per stock). TD3: short-term mean-reversion (bets against recent winners). A2C: inverse-volatility (more weight to stable stocks). DDPG: concentrated top-K momentum only.' },
+    { heading: 'Ensemble strategy', text: 'Ensemble averages all 5 weight vectors, weighted by each algorithm\'s recent Sharpe performance. Algorithms that performed better recently get higher influence — reducing single-model bias.' },
+    { heading: 'Training reward curve', text: 'Shows Sharpe Ratio per episode. An episode = 252 trading days (1 year) of real returns. Upward trend = agent learning better allocation. Each algorithm shows a different convergence pattern.' },
+    { heading: 'Cumulative returns', text: 'Portfolio growth on out-of-sample validation data. Compares all 6 strategies plus equal-weight baseline. Shows real out-of-sample performance — data the agents never trained on.' },
+    { heading: 'Constraints', text: 'Max 20% per stock (diversification), -5% stop loss, -15% circuit breaker, 0.1% transaction cost + 0.05% slippage. These are real Indian market constraints applied to all algorithms.' },
   ],
 };
 
@@ -89,10 +89,7 @@ const SECTOR_COLORS: Record<string, string> = {
   'Unknown': '#9CA3AF',
 };
 
-type AgentType = 'PPO' | 'SAC' | 'TD3' | 'A2C' | 'DDPG' | 'Ensemble'
-const ALGO_PREFIX: Record<AgentType, string> = {
-  PPO: 'ppo', SAC: 'sac', TD3: 'td3', A2C: 'a2c', DDPG: 'ddpg', Ensemble: 'ensemble',
-}
+
 const ALGO_COLORS: Record<AgentType, string> = {
   PPO: '#C15F3C', SAC: '#6366F1', TD3: '#0D9488',
   A2C: '#F59E0B', DDPG: '#EC4899', Ensemble: '#16A34A',
@@ -156,29 +153,46 @@ export default function RlAgent() {
     a2c: r.a2c_reward, ddpg: r.ddpg_reward, ensemble: r.ensemble_reward,
   }));
   const weightKey = `${ak}_weight` as keyof typeof data.weights[0]
-  const weightData = data.weights.slice(0, 15).map(w => ({
-    name: w.ticker,
-    weight: (w[weightKey] as number) ?? 0,
-    sector: w.sector,
-  }));
+  const weightData = data.weights.slice(0, 15).map(w => {
+    const v = w[weightKey];
+    return { name: w.ticker, weight: typeof v === 'number' ? v : 0, sector: w.sector };
+  });
 
   // Sector allocation pie data
-  const sectorPieData = data.sector_allocation.map(s => ({
-    name: s.sector,
-    value: (s[`${ak}_weight` as keyof typeof s] as number) ?? 0,
-    color: SECTOR_COLORS[s.sector] || '#9CA3AF',
-  })).filter(d => d.value > 1);
+  const sectorPieData = data.sector_allocation.map(s => {
+    const sv = s[`${ak}_weight` as keyof typeof s];
+    return { name: s.sector, value: typeof sv === 'number' ? sv : 0, color: SECTOR_COLORS[s.sector] || '#9CA3AF' };
+  }).filter(d => d.value > 1);
 
   // All-algo comparison rows
   const allAlgos: AgentType[] = ['PPO', 'SAC', 'TD3', 'A2C', 'DDPG', 'Ensemble']
-  const bestSharpe = Math.max(...allAlgos.map(a => getM(data, a, 'sharpe')))
+
+  // Per-column best values
+  const colBest = {
+    sharpe:        Math.max(...allAlgos.map(a => getM(data, a, 'sharpe'))),
+    sortino:       Math.max(...allAlgos.map(a => getM(data, a, 'sortino'))),
+    annual_return: Math.max(...allAlgos.map(a => getM(data, a, 'annual_return'))),
+    annual_vol:    Math.min(...allAlgos.map(a => getM(data, a, 'annual_vol'))),
+    max_drawdown:  Math.max(...allAlgos.map(a => getM(data, a, 'max_drawdown'))), // closest to 0 = highest
+  }
+
+  // Data-driven "Recommended" badge: composite score = Sharpe + Sortino*0.5 + annRet*0.02 - |maxDD|*2
+  const recommendedAlgo = allAlgos.reduce<AgentType>((best, a) => {
+    const score = (algo: AgentType) =>
+      getM(data, algo, 'sharpe') +
+      getM(data, algo, 'sortino') * 0.5 +
+      getM(data, algo, 'annual_return') * 0.02 -
+      Math.abs(getM(data, algo, 'max_drawdown')) * 2
+    return score(a) > score(best) ? a : best
+  }, allAlgos[0])
+
 
   return (
     <div>
       <div className="flex items-center justify-between">
         <PageHeader
           title="RL Agent Monitor"
-          subtitle={`5 algorithms + Ensemble on real NIFTY 50 — ${data.ppo_episodes} episodes — validation 2022-2023`}
+          subtitle={`5 algorithms + Ensemble on real NIFTY 50 — ${data.ppo_episodes} episodes — out-of-sample validation`}
           icon={<Brain size={24} />}
         />
         <PageInfoPanel title={PAGE_INFO.title} sections={PAGE_INFO.sections} />
@@ -255,11 +269,13 @@ export default function RlAgent() {
             </thead>
             <tbody>
               {allAlgos.map((a, rowIdx) => {
-                const isEnsemble = a === 'Ensemble'
-                const isBest = getM(data, a, 'sharpe') === bestSharpe
+                const isRecommended = a === recommendedAlgo
                 const sharpe = getM(data, a, 'sharpe')
-                const barPct = bestSharpe > 0 ? Math.max(0, (sharpe / bestSharpe)) * 100 : 0
+                const sortino = getM(data, a, 'sortino')
                 const annRet = getM(data, a, 'annual_return')
+                const annVol = getM(data, a, 'annual_vol')
+                const dd = getM(data, a, 'max_drawdown')
+                const barPct = colBest.sharpe > 0 ? Math.max(0, (sharpe / colBest.sharpe)) * 100 : 0
                 return (
                   <motion.tr
                     key={a}
@@ -271,28 +287,33 @@ export default function RlAgent() {
                       agent === a
                         ? 'bg-primary-subtle border-l-[3px] border-l-primary'
                         : 'hover:bg-bg-card'
-                    } ${isEnsemble ? 'font-semibold' : ''}`}
+                    } ${isRecommended ? 'font-semibold' : ''}`}
                   >
                     <td className="py-2.5 pl-3 flex items-center gap-2">
                       <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: ALGO_COLORS[a] }} />
                       {a}
-                      {isBest && <Badge variant="profit">Best</Badge>}
-                      {isEnsemble && <Badge variant="info">Recommended</Badge>}
+                      {isRecommended && <Badge variant="profit">Recommended</Badge>}
                     </td>
                     {/* Sharpe with fill bar */}
-                    <td className="py-2.5 text-right font-mono relative pr-3">
+                    <td className={`py-2.5 text-right font-mono relative pr-3 ${sharpe === colBest.sharpe ? 'text-profit font-bold' : ''}`}>
                       <div
                         className="absolute inset-y-1 right-0 rounded-l opacity-[0.12]"
                         style={{ width: `${barPct}%`, background: ALGO_COLORS[a] }}
                       />
                       <span className="relative z-10">{sharpe.toFixed(4)}</span>
                     </td>
-                    <td className="py-2.5 text-right font-mono">{getM(data, a, 'sortino').toFixed(4)}</td>
-                    <td className={`py-2.5 text-right font-mono ${annRet >= 0 ? 'text-profit' : 'text-loss'}`}>
+                    <td className={`py-2.5 text-right font-mono ${sortino === colBest.sortino ? 'text-profit font-bold' : ''}`}>
+                      {sortino.toFixed(4)}
+                    </td>
+                    <td className={`py-2.5 text-right font-mono ${annRet === colBest.annual_return ? 'text-profit font-bold' : annRet >= 0 ? 'text-profit' : 'text-loss'}`}>
                       {annRet >= 0 ? '+' : ''}{annRet.toFixed(2)}%
                     </td>
-                    <td className="py-2.5 text-right font-mono text-text-secondary">{getM(data, a, 'annual_vol').toFixed(2)}%</td>
-                    <td className="py-2.5 text-right font-mono text-loss">{(getM(data, a, 'max_drawdown') * 100).toFixed(2)}%</td>
+                    <td className={`py-2.5 text-right font-mono ${annVol === colBest.annual_vol ? 'text-profit font-bold' : 'text-text-secondary'}`}>
+                      {annVol.toFixed(2)}%
+                    </td>
+                    <td className={`py-2.5 text-right font-mono ${dd === colBest.max_drawdown ? 'text-profit font-bold' : 'text-loss'}`}>
+                      {(dd * 100).toFixed(2)}%
+                    </td>
                   </motion.tr>
                 )
               })}
@@ -369,7 +390,7 @@ export default function RlAgent() {
           {activeTab === 'cumulative' && (
             <motion.div key="cumulative" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}>
               <p className="text-xs text-text-secondary mb-3">
-                Portfolio growth on validation data (2022-2023). PPO vs SAC vs Equal-Weight baseline. All use real out-of-sample returns.
+                Portfolio growth on out-of-sample validation data. All 6 strategies vs equal-weight baseline — real returns the agents never trained on.
               </p>
               <ResponsiveContainer width="100%" height={340} minHeight={1}>
                 <AreaChart data={data.cumulative_returns} margin={{ top: 10, right: 10, bottom: 0, left: 10 }}>
@@ -388,20 +409,30 @@ export default function RlAgent() {
                   <Line type="monotone" dataKey="equal_weight" name="Equal Weight" stroke="#9CA3AF" strokeWidth={1.5} strokeDasharray="5 5" dot={false} isAnimationActive={false} />
                 </AreaChart>
               </ResponsiveContainer>
-              <div className="flex justify-center gap-6 mt-3">
-                {[
-                  { label: 'PPO', value: data.cumulative_returns[data.cumulative_returns.length - 1]?.ppo, color: '#C15F3C' },
-                  { label: 'SAC', value: data.cumulative_returns[data.cumulative_returns.length - 1]?.sac, color: '#6366F1' },
-                  { label: 'Equal Wt', value: data.cumulative_returns[data.cumulative_returns.length - 1]?.equal_weight, color: '#9CA3AF' },
-                ].map(s => (
-                  <div key={s.label} className="text-center">
-                    <span className="text-xs text-text-muted">{s.label}</span>
-                    <p className="font-mono font-bold text-lg" style={{ color: s.color }}>
-                      {s.value > 0 ? '+' : ''}{s.value?.toFixed(1)}%
-                    </p>
+              {(() => {
+                const last = data.cumulative_returns[data.cumulative_returns.length - 1]
+                const cols = [
+                  { label: 'PPO',      value: last?.ppo,          color: '#C15F3C' },
+                  { label: 'SAC',      value: last?.sac,          color: '#6366F1' },
+                  { label: 'TD3',      value: last?.td3,          color: '#0D9488' },
+                  { label: 'A2C',      value: last?.a2c,          color: '#F59E0B' },
+                  { label: 'DDPG',     value: last?.ddpg,         color: '#EC4899' },
+                  { label: '★ Ensemble', value: last?.ensemble,   color: '#16A34A' },
+                  { label: 'Equal Wt', value: last?.equal_weight, color: '#9CA3AF' },
+                ]
+                return (
+                  <div className="flex flex-wrap justify-center gap-4 mt-3">
+                    {cols.map(s => (
+                      <div key={s.label} className="text-center">
+                        <span className="text-xs text-text-muted">{s.label}</span>
+                        <p className="font-mono font-bold text-base" style={{ color: s.color }}>
+                          {(s.value ?? 0) > 0 ? '+' : ''}{(s.value ?? 0).toFixed(1)}%
+                        </p>
+                      </div>
+                    ))}
                   </div>
-                ))}
-              </div>
+                )
+              })()}
             </motion.div>
           )}
 
@@ -465,16 +496,23 @@ export default function RlAgent() {
         {/* Stock Return Contributions */}
         <Card>
           <h2 className="font-display font-bold text-lg text-secondary mb-1">
-            Return Contribution — PPO (Top 15)
+            Return Contribution — {agent}
           </h2>
           <p className="text-xs text-text-secondary mb-3">
-            Which stocks drive portfolio returns. Contribution = weight × stock return.
+            Which stocks drive portfolio returns for {agent}. Contribution = weight × stock return.
           </p>
           {(() => {
-            const maxContrib = Math.max(...data.stock_contributions.map(s => Math.abs(s.return_contrib)), 0.01);
+            // Recompute contributions from selected algo's weights
+            const agentContribs = data.weights.map(w => {
+              const wPct = (w[`${ak}_weight` as keyof typeof w] as number) ?? 0
+              const sc = data.stock_contributions.find(s => s.ticker === w.ticker)
+              const cumRet = sc?.cumulative_return ?? 0
+              return { ticker: w.ticker, sector: w.sector, weight: wPct, cumulative_return: cumRet, return_contrib: (wPct / 100) * cumRet }
+            }).filter(s => s.weight > 0).sort((a, b) => b.return_contrib - a.return_contrib)
+            const maxContrib = Math.max(...agentContribs.map(s => Math.abs(s.return_contrib)), 0.01);
             return (
               <div className="space-y-1.5 max-h-[340px] overflow-y-auto">
-                {data.stock_contributions.map((s, i) => {
+                {agentContribs.map((s, i) => {
                   const barPct = (Math.abs(s.return_contrib) / maxContrib) * 100;
                   return (
                     <motion.div key={s.ticker}

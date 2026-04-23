@@ -10,7 +10,7 @@ Docs: http://localhost:8000/docs (Swagger UI)
 import traceback
 
 import numpy as np
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
 from src.utils.config import get_config
@@ -41,27 +41,46 @@ logger = get_logger('api')
 # ============================================================
 
 import os as _os
+import time as _time
+import threading as _threading
 import pandas as _pd
 
 _PRICE_DF: '_pd.DataFrame | None' = None
 _NIFTY_DF: '_pd.DataFrame | None' = None
+_CACHE_LOCK = _threading.Lock()
+
+# News sentiment TTL cache — avoids re-running 22 HTTP calls + FinBERT on every refresh
+_NEWS_CACHE: dict = {'data': None, 'ts': 0.0}
+_NEWS_TTL: int = get_config('sentiment').get('news_cache_ttl', 180)
 
 
 def _get_price_df() -> '_pd.DataFrame':
     global _PRICE_DF
     if _PRICE_DF is None:
-        csv_path = _os.path.join(_os.path.dirname(__file__), '..', '..', 'data', 'all_close_prices.csv')
-        _PRICE_DF = _pd.read_csv(csv_path, parse_dates=['Date'], index_col='Date').dropna(axis=1, how='all').ffill()
+        with _CACHE_LOCK:
+            if _PRICE_DF is None:   # double-checked locking
+                csv_path = _os.path.join(_os.path.dirname(__file__), '..', '..', 'data', 'all_close_prices.csv')
+                _PRICE_DF = _pd.read_csv(csv_path, parse_dates=['Date'], index_col='Date').dropna(axis=1, how='all').ffill()
     return _PRICE_DF
 
 
 def _get_nifty_df() -> '_pd.DataFrame | None':
     global _NIFTY_DF
     if _NIFTY_DF is None:
-        nifty_path = _os.path.join(_os.path.dirname(__file__), '..', '..', 'data', 'NIFTY50_INDEX.csv')
-        if _os.path.exists(nifty_path):
-            _NIFTY_DF = _pd.read_csv(nifty_path, parse_dates=['Date'], index_col='Date')
+        with _CACHE_LOCK:
+            if _NIFTY_DF is None:
+                nifty_path = _os.path.join(_os.path.dirname(__file__), '..', '..', 'data', 'NIFTY50_INDEX.csv')
+                if _os.path.exists(nifty_path):
+                    _NIFTY_DF = _pd.read_csv(nifty_path, parse_dates=['Date'], index_col='Date')
     return _NIFTY_DF
+
+
+def _invalidate_cache() -> None:
+    """Call this to force a CSV reload on next request (e.g. after new data lands)."""
+    global _PRICE_DF, _NIFTY_DF
+    with _CACHE_LOCK:
+        _PRICE_DF = None
+        _NIFTY_DF = None
 
 
 # ============================================================
@@ -91,6 +110,55 @@ def create_app() -> FastAPI:
 
 
 app = create_app()
+
+
+# ── Startup: gap-fill CSV in background so server starts instantly ────────────
+
+@app.on_event("startup")
+def _startup_gap_fill():
+    import threading
+    from src.data.live import update_price_data
+
+    def _run():
+        result = update_price_data()
+        if result['status'] == 'updated':
+            _invalidate_cache()
+            logger.info(f'Startup gap-fill complete: +{result["added_rows"]} rows')
+
+    threading.Thread(target=_run, daemon=True).start()
+
+
+# ============================================================
+# CACHE MANAGEMENT
+# ============================================================
+
+@app.post("/api/cache/refresh")
+def refresh_cache():
+    """Force-reload the CSV price data on next request.
+
+    Call this after copying new CSV data into the data/ folder so the
+    dashboard reflects updated prices without restarting the server.
+    """
+    _invalidate_cache()
+    return {"status": "ok", "message": "Cache invalidated — next request will reload CSV"}
+
+
+@app.get("/api/refresh-data")
+def refresh_price_data():
+    """Invalidate in-memory CSV cache and return current data status.
+
+    Actual gap-fill happens automatically at startup in the background.
+    This endpoint is safe to call anytime — no downloads, instant response.
+    """
+    from src.data.live import get_data_as_of
+
+    _invalidate_cache()
+    return {
+        'status': 'skipped',
+        'added_rows': 0,
+        'gap_days': 0,
+        'data_as_of': get_data_as_of(),
+    }
 
 
 # ============================================================
@@ -165,15 +233,25 @@ def stock_detail(ticker: str):
         prices = df[col]
         n_stocks = len(df.columns)
 
-        # Last 252 days for 1-year metrics
-        eval_days = min(252, len(prices))
+        _cfg_data = get_config('data')
+        _cfg_port = get_config('portfolio')
+        _eval_days = _cfg_port.get('eval_days', _cfg_data.get('trading_days_per_year', 248))
+        _sparkline  = _cfg_port.get('sparkline_days', 60)
+
+        eval_days = min(_eval_days, len(prices))
         prices_1y = prices.iloc[-eval_days:]
         returns_1y = prices_1y.pct_change().dropna()
 
-        current = float(prices_1y.iloc[-1])
-        prev = float(prices_1y.iloc[-2])
+        csv_last = float(prices_1y.iloc[-1])
+        csv_prev = float(prices_1y.iloc[-2])
+
+        # Attempt live price from yfinance; fall back to CSV last row
+        from src.data.live import get_live_price
+        live = get_live_price(col, fallback_price=csv_last)
+        current = live['price'] if live['price'] > 0 else csv_last
+        prev = live['prev_close'] if live['prev_close'] > 0 else csv_prev
         daily_change = current - prev
-        daily_pct = (daily_change / prev) * 100
+        daily_pct = (daily_change / prev) * 100 if prev else 0.0
 
         high_52w = float(prices_1y.max())
         low_52w = float(prices_1y.min())
@@ -186,8 +264,7 @@ def stock_detail(ticker: str):
         md = float(max_drawdown(values))
         weight = round(100 / n_stocks, 2)
 
-        # Last 60 days for sparkline
-        last60 = prices.iloc[-60:]
+        last60 = prices.iloc[-_sparkline:]
         history = []
         for i in range(0, len(last60), 2):  # every other day
             history.append(StockPricePoint(
@@ -296,12 +373,15 @@ def run_stress_test(req: StressTestRequest):
 
         scenarios = []
         for name, data in summary.items():
+            def _f(v, default=0.0) -> float:
+                try: return float(v)
+                except (TypeError, ValueError): return default
             scenarios.append(ScenarioResult(
                 scenario=name,
-                mean_return=str(data.get('mean_return', 'N/A')),
-                var_95=str(data.get('var_95', 'N/A')),
-                cvar_95=str(data.get('cvar_95', 'N/A')),
-                survival_rate=str(data.get('survival_rate', 'N/A')),
+                mean_return=round(_f(data.get('mean_return')), 6),
+                var_95=round(_f(data.get('var_95')), 6),
+                cvar_95=round(_f(data.get('cvar_95')), 6),
+                survival_rate=round(_f(data.get('survival_rate')), 6),
             ))
 
         return StressTestResponse(
@@ -385,12 +465,16 @@ def compute_metrics(req: MetricsRequest):
 # ============================================================
 
 @app.get("/api/portfolio-summary", response_model=PortfolioSummaryResponse)
-def portfolio_summary():
+def portfolio_summary(
+    start_date: str | None = Query(None, description="Evaluation start date YYYY-MM-DD"),
+    end_date: str | None = Query(None, description="Evaluation end date YYYY-MM-DD"),
+):
     """Compute portfolio summary from real NIFTY 50 stock data.
 
     Uses actual price data from all_close_prices.csv.
     Equal-weight portfolio across all available stocks.
-    Evaluation period: last 252 trading days (1 year).
+    If start_date/end_date are provided, evaluation is for that range;
+    otherwise defaults to the last eval_days trading days.
     """
     from src.utils.metrics import (
         sharpe_ratio, sortino_ratio, annualized_return,
@@ -401,9 +485,16 @@ def portfolio_summary():
     try:
         df = _get_price_df()
 
-        # Use last 252 trading days for evaluation
-        eval_days = min(252, len(df))
-        df_eval = df.iloc[-eval_days:]
+        _cfg_data = get_config('data')
+        _cfg_port = get_config('portfolio')
+        _eval_days = _cfg_port.get('eval_days', _cfg_data.get('trading_days_per_year', 248))
+
+        if start_date and end_date:
+            df_eval = df.loc[start_date:end_date]
+            if df_eval.empty:
+                raise HTTPException(status_code=400, detail=f'No price data between {start_date} and {end_date}')
+        else:
+            df_eval = df.iloc[-min(_eval_days, len(df)):]
         tickers = df_eval.columns.tolist()
         n_stocks = len(tickers)
 
@@ -441,10 +532,6 @@ def portfolio_summary():
         av = annualized_volatility(portfolio_daily)
         md = max_drawdown(portfolio_values)
 
-        # Starting capital ₹1 Crore
-        starting_capital = 10_000_000
-        current_value = starting_capital * (1 + portfolio_cum[-1])
-
         # Holdings (latest day returns + cumulative)
         last_daily = daily_returns.iloc[-1]
         full_cum = (df_eval.iloc[-1] / df_eval.iloc[0]) - 1
@@ -480,8 +567,10 @@ def portfolio_summary():
             nifty=round(float(nifty_cum[-1]) * 100, 2),
         ))
 
+        from src.data.live import get_data_as_of
+        total_ret_pct = round(float(portfolio_cum[-1]) * 100, 2)
         return PortfolioSummaryResponse(
-            portfolio_value=round(float(current_value), 0),
+            portfolio_value=0,  # frontend computes: startingCapital * (1 + total_return_pct/100)
             sharpe_ratio=round(float(sr), 4),
             sortino_ratio=round(float(so), 4),
             annualized_return=round(float(ar), 4),
@@ -494,6 +583,8 @@ def portfolio_summary():
             holdings=holdings,
             performance=perf,
             sector_weights=sector_weight_map,
+            data_as_of=get_data_as_of() or dates[-1].strftime('%d %b %Y'),
+            total_return_pct=total_ret_pct,
         )
 
     except Exception as e:
@@ -528,12 +619,26 @@ def rl_summary():
         tickers = df.columns.tolist()
         n_stocks = len(tickers)
 
+        # Dynamic split: train on first ~70% of dates, validate on the rest
+        _train_cutoff = df.index[int(len(df) * 0.70)]
+
         # Use train period for training curves
-        train_df = df[df.index <= '2021-12-31']
+        train_df = df[df.index <= _train_cutoff]
         daily_returns = train_df.pct_change().dropna().values
         n_days = len(daily_returns)
         ep_len = rl_cfg.get('episode_length', 252)
         n_episodes = min(n_days // ep_len, 80)
+
+        # Read algorithm-specific strategy params from config
+        ppo_momentum_scale = rl_cfg.get('ppo_momentum_scale', 80)
+        ppo_eq_blend       = rl_cfg.get('ppo_eq_blend', 0.35)
+        sac_momentum_scale = rl_cfg.get('sac_momentum_scale', 25)
+        sac_max_position   = rl_cfg.get('sac_max_position', 0.08)
+        td3_reversal_days  = rl_cfg.get('td3_reversal_days', 5)
+        td3_reversal_scale = rl_cfg.get('td3_reversal_scale', 60)
+        a2c_max_position   = rl_cfg.get('a2c_max_position', 0.12)
+        ddpg_top_k         = rl_cfg.get('ddpg_top_k', 10)
+        ddpg_momentum_scale = rl_cfg.get('ddpg_momentum_scale', 200)
 
         # Track weight evolution snapshots
         weight_evo_snapshots = []
@@ -545,7 +650,6 @@ def rl_summary():
             return w / s if s > 0 else np.ones_like(w) / len(w)
 
         def _safe_exp(scores, scale):
-            """exp(scores*scale) with overflow protection (clips to [-10, 10])."""
             return np.exp(np.clip(scores * scale, -10.0, 10.0))
 
         # Simulate 6-algorithm episode rewards from real returns
@@ -558,37 +662,58 @@ def rl_summary():
             start = ep * ep_len % (n_days - ep_len)
             ep_returns = daily_returns[start:start + ep_len]
 
-            progress = ep / max(n_episodes - 1, 1)
-            momentum_scores = np.mean(ep_returns[-60:], axis=0) if ep_returns.shape[0] >= 60 else np.mean(ep_returns, axis=0)
+            eq_w = np.ones(n_stocks) / n_stocks
+            n_rows = ep_returns.shape[0]
 
-            # PPO — blends equal-weight with momentum as training progresses
-            ppo_w = _clip_norm((1 - progress * 0.7) * (np.ones(n_stocks) / n_stocks)
-                                + progress * 0.7 * _clip_norm(_safe_exp(momentum_scores, 100)))
+            # Signal: 60-day momentum (PPO/SAC/DDPG long-term trend signal)
+            mom_60 = np.mean(ep_returns[-60:], axis=0) if n_rows >= 60 else np.mean(ep_returns, axis=0)
+            # Signal: short-term momentum (TD3 reversal signal)
+            mom_5  = np.mean(ep_returns[-td3_reversal_days:], axis=0) if n_rows >= td3_reversal_days else np.mean(ep_returns, axis=0)
+            # Signal: 60-day volatility (A2C inverse-vol signal)
+            vol_60 = np.std(ep_returns[-60:], axis=0) if n_rows >= 60 else np.std(ep_returns, axis=0)
+            vol_60 = np.where(vol_60 < 1e-8, 1e-8, vol_60)
+
+            # PPO — moderate momentum blend with equal-weight diversification
+            ppo_mom_w = _clip_norm(_safe_exp(mom_60, ppo_momentum_scale))
+            ppo_w = _clip_norm((1 - ppo_eq_blend) * ppo_mom_w + ppo_eq_blend * eq_w)
             ppo_reward = float(sharpe_ratio(ep_returns @ ppo_w))
             ppo_rewards_all.append(ppo_reward)
 
-            # SAC — PPO + small exploration noise (entropy bonus effect)
-            sac_w = _clip_norm(ppo_w + rng.normal(0, 0.01 * (1 - progress * 0.5), n_stocks))
+            # SAC — soft momentum, forced diversification via low max_pos cap
+            sac_w = _clip_norm(_safe_exp(mom_60, sac_momentum_scale), max_pos=sac_max_position)
             sac_reward = float(sharpe_ratio(ep_returns @ sac_w))
             sac_rewards_all.append(sac_reward)
 
-            # TD3 — aggressive momentum (higher exponent), delayed updates = less noise
-            td3_w = _clip_norm(_safe_exp(momentum_scores, 120))
+            # TD3 — mean-reversion: bets AGAINST recent short-term winners
+            td3_w = _clip_norm(_safe_exp(-mom_5, td3_reversal_scale))
             td3_reward = float(sharpe_ratio(ep_returns @ td3_w))
             td3_rewards_all.append(td3_reward)
 
-            # A2C — contrarian / conservative (short rollouts, mean-reverting)
-            a2c_w = _clip_norm(_safe_exp(-momentum_scores, 30), max_pos=0.15)
+            # A2C — inverse-volatility: allocates MORE to low-vol (stable) stocks
+            a2c_w = _clip_norm(1.0 / vol_60, max_pos=a2c_max_position)
             a2c_reward = float(sharpe_ratio(ep_returns @ a2c_w))
             a2c_rewards_all.append(a2c_reward)
 
-            # DDPG — blend of momentum and equal-weight (deterministic, no entropy)
-            ddpg_w = _clip_norm(0.5 * ppo_w + 0.5 * np.ones(n_stocks) / n_stocks)
+            # DDPG — concentrated: only top-K momentum stocks get any weight
+            top_k_idx = np.argsort(mom_60)[::-1][:ddpg_top_k]
+            ddpg_raw = np.zeros(n_stocks)
+            ddpg_raw[top_k_idx] = _safe_exp(mom_60[top_k_idx], ddpg_momentum_scale)
+            ddpg_w = _clip_norm(ddpg_raw)
             ddpg_reward = float(sharpe_ratio(ep_returns @ ddpg_w))
             ddpg_rewards_all.append(ddpg_reward)
 
-            # Ensemble — average of all 5 weight vectors
-            ens_w = _clip_norm((ppo_w + sac_w + td3_w + a2c_w + ddpg_w) / 5.0)
+            # Ensemble — performance-weighted average (more weight to better recent performers)
+            if len(ppo_rewards_all) >= 10:
+                w_ppo  = max(np.mean(ppo_rewards_all[-10:]),  0.01)
+                w_sac  = max(np.mean(sac_rewards_all[-10:]),  0.01)
+                w_td3  = max(np.mean(td3_rewards_all[-10:]),  0.01)
+                w_a2c  = max(np.mean(a2c_rewards_all[-10:]),  0.01)
+                w_ddpg = max(np.mean(ddpg_rewards_all[-10:]), 0.01)
+                total_w = w_ppo + w_sac + w_td3 + w_a2c + w_ddpg
+                ens_raw = (w_ppo*ppo_w + w_sac*sac_w + w_td3*td3_w + w_a2c*a2c_w + w_ddpg*ddpg_w) / total_w
+            else:
+                ens_raw = (ppo_w + sac_w + td3_w + a2c_w + ddpg_w) / 5.0
+            ens_w = _clip_norm(ens_raw)
             ens_reward = float(sharpe_ratio(ep_returns @ ens_w))
             ens_rewards_all.append(ens_reward)
 
@@ -618,17 +743,47 @@ def rl_summary():
                     weights=snap,
                 ))
 
-        # Final weights on validation period
-        val_df = df[(df.index > '2021-12-31') & (df.index <= '2023-12-31')]
+        # Final weights on validation period (dynamic — all data after train cutoff)
+        val_df = df[df.index > _train_cutoff]
         val_returns = val_df.pct_change().dropna().values
-        momentum = np.mean(val_returns[-60:], axis=0) if val_returns.shape[0] >= 60 else np.mean(val_returns, axis=0)
+        val_n = val_returns.shape[0]
 
-        final_ppo_w  = _clip_norm(_safe_exp(momentum, 150))
-        final_sac_w  = _clip_norm(_safe_exp(momentum, 120))
-        final_td3_w  = _clip_norm(_safe_exp(momentum, 180))
-        final_a2c_w  = _clip_norm(_safe_exp(-momentum, 30), max_pos=0.15)
-        final_ddpg_w = _clip_norm(0.5 * final_ppo_w + 0.5 * np.ones(n_stocks) / n_stocks)
-        final_ens_w  = _clip_norm((final_ppo_w + final_sac_w + final_td3_w + final_a2c_w + final_ddpg_w) / 5.0)
+        val_mom_60 = np.mean(val_returns[-60:], axis=0) if val_n >= 60 else np.mean(val_returns, axis=0)
+        val_mom_5  = np.mean(val_returns[-td3_reversal_days:], axis=0) if val_n >= td3_reversal_days else np.mean(val_returns, axis=0)
+        val_vol_60 = np.std(val_returns[-60:], axis=0) if val_n >= 60 else np.std(val_returns, axis=0)
+        val_vol_60 = np.where(val_vol_60 < 1e-8, 1e-8, val_vol_60)
+        eq_w = np.ones(n_stocks) / n_stocks
+
+        # PPO — moderate momentum blend with equal-weight diversification
+        final_ppo_mom_w = _clip_norm(_safe_exp(val_mom_60, ppo_momentum_scale))
+        final_ppo_w = _clip_norm((1 - ppo_eq_blend) * final_ppo_mom_w + ppo_eq_blend * eq_w)
+
+        # SAC — soft momentum, forced diversification via low max_pos cap
+        final_sac_w = _clip_norm(_safe_exp(val_mom_60, sac_momentum_scale), max_pos=sac_max_position)
+
+        # TD3 — mean-reversion: bets against recent short-term winners
+        final_td3_w = _clip_norm(_safe_exp(-val_mom_5, td3_reversal_scale))
+
+        # A2C — inverse-volatility: more weight to low-volatility stocks
+        final_a2c_w = _clip_norm(1.0 / val_vol_60, max_pos=a2c_max_position)
+
+        # DDPG — concentrated in top-K momentum stocks only
+        top_k_val = np.argsort(val_mom_60)[::-1][:ddpg_top_k]
+        final_ddpg_raw = np.zeros(n_stocks)
+        final_ddpg_raw[top_k_val] = _safe_exp(val_mom_60[top_k_val], ddpg_momentum_scale)
+        final_ddpg_w = _clip_norm(final_ddpg_raw)
+
+        # Ensemble — performance-weighted from last 10 episode rewards
+        ens_ppo  = max(np.mean(ppo_rewards_all[-10:]),  0.01)
+        ens_sac  = max(np.mean(sac_rewards_all[-10:]),  0.01)
+        ens_td3  = max(np.mean(td3_rewards_all[-10:]),  0.01)
+        ens_a2c  = max(np.mean(a2c_rewards_all[-10:]),  0.01)
+        ens_ddpg = max(np.mean(ddpg_rewards_all[-10:]), 0.01)
+        ens_total = ens_ppo + ens_sac + ens_td3 + ens_a2c + ens_ddpg
+        final_ens_w = _clip_norm(
+            (ens_ppo*final_ppo_w + ens_sac*final_sac_w + ens_td3*final_td3_w +
+             ens_a2c*final_a2c_w + ens_ddpg*final_ddpg_w) / ens_total
+        )
 
         # Top 15 stocks by PPO weight
         top_idx = np.argsort(final_ppo_w)[::-1][:15]
@@ -823,9 +978,10 @@ def nas_summary():
         search_epochs = nas_cfg.get('darts_epochs', 50)
 
         df = _get_price_df()
+        _train_cutoff = df.index[int(len(df) * 0.70)]
 
         # Real stock statistics drive which ops converge
-        train_df = df[df.index <= '2021-12-31']
+        train_df = df[df.index <= _train_cutoff]
         returns = train_df.pct_change().dropna().values
         n_stocks = returns.shape[1]
 
@@ -863,7 +1019,7 @@ def nas_summary():
         best_arch = ['Linear', 'Attention', 'Linear', 'Skip']
 
         # NAS vs hand-designed comparison using real validation data
-        val_df = df[(df.index > '2021-12-31') & (df.index <= '2023-12-31')]
+        val_df = df[df.index > _train_cutoff]
         val_returns = val_df.pct_change().dropna().values
         eq_w = np.ones(n_stocks) / n_stocks
 
@@ -962,8 +1118,9 @@ def fl_summary():
                 n_stocks=len(client_tickers[ci]),
             ))
 
+        _train_cutoff = df.index[int(len(df) * 0.70)]
         # Compute real per-client portfolio variance (used as "loss" proxy)
-        train_df = df[df.index <= '2021-12-31']
+        train_df = df[df.index <= _train_cutoff]
         train_returns = train_df.pct_change().dropna()
 
         client_variances = []
@@ -1007,7 +1164,7 @@ def fl_summary():
             ))
 
         # Fairness: per-client Sharpe with FL vs without FL (real returns)
-        val_df = df[(df.index > '2021-12-31') & (df.index <= '2023-12-31')]
+        val_df = df[df.index > _train_cutoff]
         val_returns = val_df.pct_change().dropna()
         all_eq = np.ones(len(tickers)) / len(tickers)
         global_port = val_returns.values @ all_eq
@@ -1075,8 +1232,9 @@ def gnn_summary():
         tickers = df.columns.tolist()
         n_stocks = len(tickers)
 
-        # Latest 60-day rolling correlation matrix
-        last_60 = df.iloc[-60:]
+        _gnn_cfg = get_config('gnn')
+        _corr_window = _gnn_cfg.get('correlation_window', 60)
+        last_60 = df.iloc[-_corr_window:]
         returns_60 = last_60.pct_change().dropna()
         corr_matrix = returns_60.corr().values
         corr_matrix = np.nan_to_num(corr_matrix, nan=0.0)
@@ -1122,9 +1280,7 @@ def gnn_summary():
                 degree_count[short_b] += 1
                 n_supply += 1
 
-        # Correlation edges (|corr| > 0.4, upper triangle, skip existing pairs)
-        # Threshold 0.4 chosen because most >0.6 pairs are already sector/supply edges
-        corr_threshold = 0.4
+        corr_threshold = get_config('gnn').get('correlation_threshold', 0.6)
         existing_pairs = set()
         for e in all_edges:
             key = tuple(sorted([e.source, e.target]))
@@ -1242,7 +1398,7 @@ def gnn_summary():
 # ============================================================
 
 @app.get("/api/news-sentiment", response_model=NewsSentimentResponse)
-def news_sentiment():
+def news_sentiment(force: bool = Query(False, description="Skip TTL cache — always fetch fresh")):
     """Fetch real financial news and analyze sentiment with FinBERT.
 
     Fetches from Google News RSS for key NIFTY 50 stocks,
@@ -1252,64 +1408,138 @@ def news_sentiment():
     import os
     import pandas as pd
     from collections import defaultdict
+    from concurrent.futures import ThreadPoolExecutor, as_completed
     from src.sentiment.news_fetcher import fetch_google_news, get_company_name
     from src.sentiment.finbert import predict_batch
     from src.data.stocks import get_all_tickers, get_sector, NIFTY50
 
     try:
+        # Return cached result if fresh enough (skip when user explicitly forces a refresh)
+        if not force and _NEWS_CACHE['data'] is not None and _time.time() - _NEWS_CACHE['ts'] < _NEWS_TTL:
+            return _NEWS_CACHE['data']
+
+        _sent_cfg   = get_config('sentiment')
+        _sent_thr   = _sent_cfg.get('sentiment_threshold', 0.1)
+        _mood_thr   = _sent_cfg.get('market_mood_threshold', 0.08)
+        _sensitivity = _sent_cfg.get('sensitivity', 2.0)
+        _max_news_t = _sent_cfg.get('max_news_tickers', 20)
+
         tickers = get_all_tickers()
         n_stocks = len(tickers)
         eq_w = 100.0 / n_stocks
 
-        # Fetch news for key stocks (representative per sector + market-wide)
-        # Use top market-cap stocks per sector for speed
-        key_tickers = [
-            'RELIANCE.NS', 'TCS.NS', 'HDFCBANK.NS', 'INFY.NS', 'ICICIBANK.NS',
-            'SBIN.NS', 'BHARTIARTL.NS', 'ITC.NS', 'HINDUNILVR.NS', 'TATAMOTORS.NS',
-            'SUNPHARMA.NS', 'LT.NS', 'BAJFINANCE.NS', 'TATASTEEL.NS', 'MARUTI.NS',
-            'NTPC.NS', 'TITAN.NS', 'ADANIENT.NS', 'WIPRO.NS', 'KOTAKBANK.NS',
-        ]
+        # Use the first N tickers from the live stock list (no hardcoded list)
+        key_tickers = tickers[:_max_news_t]
         # Also fetch broad market news
         market_queries = [
             ('NIFTY 50 Indian stock market', '', 'Market'),
             ('Indian stock market today', '', 'Market'),
         ]
 
-        all_headlines = []
+        def _pub_str(h: dict) -> str:
+            p = h.get('published')
+            if not p:
+                return ''
+            return p.strftime('%b %d, %H:%M') if hasattr(p, 'strftime') else str(p)
 
-        # Fetch per-stock news
-        for ticker in key_tickers:
+        def _source_str(h: dict) -> str:
+            link = h.get('link', '')
+            return link.split('//')[-1].split('/')[0] if link else ''
+
+        def _dt_ts(raw) -> float:
+            """Return POSIX timestamp for sorting; 0.0 if unknown (goes to bottom)."""
+            if raw and hasattr(raw, 'timestamp'):
+                return raw.timestamp()
+            return 0.0
+
+        from datetime import datetime as _datetime, timedelta as _timedelta
+        _after = (_datetime.now() - _timedelta(days=30)).strftime('%Y-%m-%d')
+
+        def _fetch_stock(ticker: str) -> list:
             company = get_company_name(ticker)
-            query = f'{company} stock NSE'
-            headlines = fetch_google_news(query, max_results=5)
+            query = f'{company} stock NSE after:{_after}'
+            results = fetch_google_news(query, max_results=5)
             sector = get_sector(ticker) or 'Unknown'
             short = ticker.replace('.NS', '')
-            for h in headlines:
-                pub = ''
-                if h.get('published'):
-                    pub = h['published'].strftime('%b %d, %H:%M') if hasattr(h['published'], 'strftime') else str(h['published'])
-                all_headlines.append({
-                    'headline': h['title'],
-                    'ticker': short,
-                    'sector': sector,
-                    'published': pub,
-                    'source': h.get('link', '').split('//')[-1].split('/')[0] if h.get('link') else '',
-                })
+            return [
+                {'headline': h['title'], 'ticker': short, 'sector': sector,
+                 'published': _pub_str(h), '_dt': h.get('published'), 'source': _source_str(h)}
+                for h in results
+            ]
 
-        # Fetch market-wide news
-        for query, _, sector_label in market_queries:
-            headlines = fetch_google_news(query, max_results=5)
-            for h in headlines:
-                pub = ''
-                if h.get('published'):
-                    pub = h['published'].strftime('%b %d, %H:%M') if hasattr(h['published'], 'strftime') else str(h['published'])
+        def _fetch_market(query: str, sector_label: str) -> list:
+            results = fetch_google_news(f'{query} after:{_after}', max_results=5)
+            return [
+                {'headline': h['title'], 'ticker': 'MARKET', 'sector': sector_label,
+                 'published': _pub_str(h), '_dt': h.get('published'), 'source': _source_str(h)}
+                for h in results
+            ]
+
+        # ── PRIMARY: Indian Financial RSS (ET, BS, Moneycontrol, LiveMint) ─────
+        # 4 requests total — no rate limits, genuinely recent (last 3 days)
+        all_headlines = []
+        try:
+            from src.sentiment.indian_rss import fetch_indian_news
+            rss_articles = fetch_indian_news(max_age_days=7)
+            for art in rss_articles:
                 all_headlines.append({
-                    'headline': h['title'],
-                    'ticker': 'MARKET',
-                    'sector': sector_label,
-                    'published': pub,
-                    'source': h.get('link', '').split('//')[-1].split('/')[0] if h.get('link') else '',
+                    'headline': art['title'],
+                    'ticker':   art['short_ticker'],
+                    'sector':   art['sector'],
+                    'published': _pub_str({'published': art['published']}),
+                    '_dt':      art['published'],
+                    'source':   art['source'],
                 })
+            logger.info(f'news_sentiment: RSS returned {len(all_headlines)} articles')
+        except Exception as _rss_err:
+            logger.warning(f'news_sentiment: RSS failed ({_rss_err}), trying yfinance')
+
+        # ── SECONDARY: yfinance (sequential to avoid rate limits) ────────────
+        if len(all_headlines) < 10:
+            from datetime import datetime as _dt_cls, timedelta as _td_cls
+            _cutoff_yf = _dt_cls.now() - _td_cls(days=14)
+            try:
+                from src.sentiment.yfinance_news import fetch_yfinance_news
+                import time as _time_mod
+                for i, ticker in enumerate(key_tickers[:10]):  # max 10 to limit time
+                    if i > 0:
+                        _time_mod.sleep(1.5)
+                    sector = get_sector(ticker) or 'Unknown'
+                    short = ticker.replace('.NS', '')
+                    for art in fetch_yfinance_news(ticker, max_results=3):
+                        dt = art.get('published')
+                        if dt and dt < _cutoff_yf:
+                            continue
+                        all_headlines.append({
+                            'headline': art['title'],
+                            'ticker':   short,
+                            'sector':   sector,
+                            'published': _pub_str({'published': dt}),
+                            '_dt':      dt,
+                            'source':   art.get('source', ''),
+                        })
+                logger.info(f'news_sentiment: yfinance added, total {len(all_headlines)}')
+            except Exception as _yf_err:
+                logger.warning(f'news_sentiment: yfinance failed ({_yf_err}), trying Google News')
+
+        # ── FALLBACK: Google News RSS (original, kept intact) ─────────────────
+        if len(all_headlines) < 10:
+            from datetime import datetime as _dt_cls, timedelta as _td_cls
+            _cutoff_gn = _dt_cls.now() - _td_cls(days=30)
+            with ThreadPoolExecutor(max_workers=8) as pool:
+                futs = [pool.submit(_fetch_stock, t) for t in key_tickers]
+                futs += [pool.submit(_fetch_market, q, s) for q, _, s in market_queries]
+                for f in as_completed(futs):
+                    try:
+                        all_headlines.extend(f.result())
+                    except Exception:
+                        pass
+            all_headlines = [h for h in all_headlines
+                             if not h.get('_dt') or h['_dt'] >= _cutoff_gn]
+            logger.info(f'news_sentiment: Google News fallback, total {len(all_headlines)}')
+
+        # Sort newest-first; articles without a date sink to the bottom
+        all_headlines.sort(key=lambda h: _dt_ts(h.get('_dt')), reverse=True)
 
         if not all_headlines:
             # Return empty but valid response if news fetch fails
@@ -1331,13 +1561,13 @@ def news_sentiment():
 
         # Run FinBERT on all headlines at once (batch)
         texts = [h['headline'] for h in all_headlines]
-        sentiments = predict_batch(texts, batch_size=16)
+        sentiments = predict_batch(texts, batch_size=_sent_cfg.get('fine_tune_batch_size', 16))
 
         # Build news items with sentiment
         news_items = []
         for h, s in zip(all_headlines, sentiments):
             score = s['score']
-            label = 'positive' if score > 0.1 else ('negative' if score < -0.1 else 'neutral')
+            label = 'positive' if score > _sent_thr else ('negative' if score < -_sent_thr else 'neutral')
             news_items.append(NewsItem(
                 headline=h['headline'],
                 source=h.get('source', ''),
@@ -1351,21 +1581,20 @@ def news_sentiment():
                 label=label,
             ))
 
-        # Sort by absolute score (most opinionated first)
-        news_items.sort(key=lambda n: abs(n.score), reverse=True)
+        # Order is newest-first (sorted before FinBERT, preserved through dedup + zip)
 
         # Overall stats
         scores = [n.score for n in news_items]
         avg_score = float(np.mean(scores))
-        market_mood = 'Bullish' if avg_score > 0.08 else ('Bearish' if avg_score < -0.08 else 'Neutral')
+        market_mood = 'Bullish' if avg_score > _mood_thr else ('Bearish' if avg_score < -_mood_thr else 'Neutral')
 
         # Score distribution buckets
         dist = {'very_negative': 0, 'negative': 0, 'neutral': 0, 'positive': 0, 'very_positive': 0}
         for s in scores:
-            if s < -0.3: dist['very_negative'] += 1
-            elif s < -0.1: dist['negative'] += 1
-            elif s <= 0.1: dist['neutral'] += 1
-            elif s <= 0.3: dist['positive'] += 1
+            if s < -3 * _sent_thr: dist['very_negative'] += 1
+            elif s < -_sent_thr:   dist['negative'] += 1
+            elif s <= _sent_thr:   dist['neutral'] += 1
+            elif s <= 3 * _sent_thr: dist['positive'] += 1
             else: dist['very_positive'] += 1
 
         # Sector sentiment aggregation
@@ -1376,8 +1605,8 @@ def news_sentiment():
 
         sector_sentiments = []
         for sector, ss in sorted(sector_scores.items(), key=lambda x: abs(np.mean(x[1])), reverse=True):
-            pos = sum(1 for s in ss if s > 0.1)
-            neg = sum(1 for s in ss if s < -0.1)
+            pos = sum(1 for s in ss if s > _sent_thr)
+            neg = sum(1 for s in ss if s < -_sent_thr)
             total = len(ss)
             sector_sentiments.append(SectorSentiment(
                 sector=sector,
@@ -1410,9 +1639,7 @@ def news_sentiment():
             else:
                 sent = sector_avg.get(sector, avg_score)
 
-            # Adjustment: multiply weight by (1 + sentiment * sensitivity)
-            sensitivity = 2.0  # how much sentiment affects weights
-            adjustment = 1 + sent * sensitivity
+            adjustment = 1 + sent * _sensitivity
             adjustments.append((t, short, sector, sent, adjustment))
 
         # Normalize adjusted weights
@@ -1431,7 +1658,7 @@ def news_sentiment():
         # Sort by weight change (biggest movers first)
         portfolio_impact.sort(key=lambda p: abs(p.weight_change), reverse=True)
 
-        return NewsSentimentResponse(
+        result = NewsSentimentResponse(
             n_headlines=len(news_items),
             avg_score=round(avg_score, 4),
             market_mood=market_mood,
@@ -1440,6 +1667,9 @@ def news_sentiment():
             portfolio_impact=portfolio_impact,
             score_distribution=dist,
         )
+        _NEWS_CACHE['data'] = result
+        _NEWS_CACHE['ts'] = _time.time()
+        return result
 
     except Exception as e:
         logger.error(f'News sentiment error: {traceback.format_exc()}')
@@ -1462,22 +1692,26 @@ def portfolio_growth(req: GrowthRequest):
     """
     try:
         df = _get_price_df()
-
-        # validate + clamp start date
-        try:
-            start_dt = pd.Timestamp(req.start_date)
-        except Exception:
-            raise HTTPException(status_code=422, detail='Invalid start_date format. Use YYYY-MM-DD.')
-
         earliest = df.index[0]
         latest   = df.index[-1]
-        if start_dt < earliest:
-            start_dt = earliest
-        if start_dt >= latest:
-            raise HTTPException(status_code=422, detail=f'start_date must be before {latest.date()}')
 
-        # slice from start_date onward
-        df_slice = df[df.index >= start_dt]
+        # validate + clamp start date — strip timezone to match naive CSV index
+        try:
+            start_dt = pd.Timestamp(req.start_date).tz_localize(None)
+        except Exception:
+            raise HTTPException(status_code=422, detail=f'Invalid start_date "{req.start_date}" — use YYYY-MM-DD (e.g. {earliest.date()})')
+
+        earliest_naive = earliest.tz_localize(None) if earliest.tzinfo else earliest
+        latest_naive   = latest.tz_localize(None)   if latest.tzinfo   else latest
+
+        if start_dt < earliest_naive:
+            start_dt = earliest_naive
+        if start_dt >= latest_naive:
+            raise HTTPException(status_code=422, detail=f'start_date must be before {latest_naive.date()}')
+
+        # slice from start_date onward (compare against naive index)
+        idx = df.index.tz_localize(None) if df.index.tzinfo else df.index
+        df_slice = df[idx >= start_dt]
         if len(df_slice) < 2:
             raise HTTPException(status_code=422, detail='Not enough data from that start date.')
 
@@ -1497,8 +1731,10 @@ def portfolio_growth(req: GrowthRequest):
         else:
             nifty_daily = port_daily * 0.85   # fallback approximation
 
-        # FD: 7% annual → daily compounding
-        fd_daily_rate = (1 + 0.07) ** (1 / 252) - 1
+        _g_cfg = get_config('data')
+        _rfr   = _g_cfg.get('risk_free_rate', 0.07)
+        _tday  = _g_cfg.get('trading_days_per_year', 248)
+        fd_daily_rate = (1 + _rfr) ** (1 / _tday) - 1
         fd_daily = np.full(len(port_daily), fd_daily_rate)
 
         # cumulative value series (starting from req.amount)

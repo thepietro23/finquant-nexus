@@ -9,13 +9,26 @@ import { api } from '../lib/api';
 import type { FLSummaryResponse } from '../lib/api';
 import Card from '../components/ui/Card';
 import MetricCard from '../components/ui/MetricCard';
+import type { MetricBadge } from '../components/ui/MetricCard';
 import PageHeader from '../components/ui/PageHeader';
 import PageInfoPanel from '../components/ui/PageInfoPanel';
 import MetricInfoPanel from '../components/ui/MetricInfoPanel';
-import { staggerContainer } from '../lib/animations';
+import { staggerContainer, staggerFast, fadeSlideUp } from '../lib/animations';
 import { motion } from 'framer-motion';
 
 const CLIENT_COLORS = ['#C15F3C', '#6366F1', '#0D9488', '#F59E0B'];
+
+function getPrivacyBadge(epsilon: number): MetricBadge {
+  if (epsilon < 1)  return { label: 'STRONG PRIVACY', variant: 'profit' };
+  if (epsilon <= 10) return { label: 'MODERATE', variant: 'warning' };
+  return { label: 'WEAK PRIVACY', variant: 'loss' };
+}
+
+function getSharpeBadge(sharpe: number): MetricBadge {
+  if (sharpe >= 1.0) return { label: 'EXCELLENT', variant: 'profit' };
+  if (sharpe >= 0.5) return { label: 'GOOD', variant: 'warning' };
+  return { label: 'POOR', variant: 'loss' };
+}
 
 const PAGE_INFO = {
   title: 'Federated Learning — What Does This Page Show?',
@@ -119,40 +132,58 @@ export default function Federated() {
       </div>
 
       <motion.div variants={staggerContainer} initial="hidden" animate="visible"
-        className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-2">
+        className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
         <MetricCard title="FL Rounds" value={data.n_rounds} decimals={0} icon={<Activity size={18} />}
+          badge={{ label: 'CONVERGED', variant: 'profit' }}
           onClick={() => setExpandedMetric(m => m === 'FL Rounds' ? null : 'FL Rounds')} active={expandedMetric === 'FL Rounds'} />
         <MetricCard title="Privacy ε" value={data.privacy_epsilon} decimals={1} icon={<Lock size={18} />}
+          badge={getPrivacyBadge(data.privacy_epsilon)}
           onClick={() => setExpandedMetric(m => m === 'Privacy ε' ? null : 'Privacy ε')} active={expandedMetric === 'Privacy ε'} />
-        <MetricCard title="Global Sharpe" value={data.global_sharpe} decimals={4} icon={<Shield size={18} />}
+        <MetricCard title="Global Sharpe" value={data.global_sharpe} decimals={3} icon={<Shield size={18} />}
+          badge={getSharpeBadge(data.global_sharpe)}
           onClick={() => setExpandedMetric(m => m === 'Global Sharpe' ? null : 'Global Sharpe')} active={expandedMetric === 'Global Sharpe'} />
-        <MetricCard title="Clients" value={data.n_clients} decimals={0} />
+        <MetricCard title="Clients" value={data.n_clients} decimals={0}
+          badge={{ label: `${data.n_clients} SECTORS`, variant: 'neutral' }} />
       </motion.div>
 
       <MetricInfoPanel expandedMetric={expandedMetric} onClose={() => setExpandedMetric(null)} details={METRIC_DETAILS} />
 
       {/* Client Info Cards */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+      <motion.div variants={staggerFast} initial="hidden" animate="visible"
+        transition={{ delayChildren: 0.35 }}
+        className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
         {data.clients.map((c, i) => (
-          <Card key={c.client_id}>
-            <div className="flex items-center gap-2 mb-2">
-              <div className="w-3 h-3 rounded-full" style={{ backgroundColor: CLIENT_COLORS[i] }} />
-              <span className="text-sm font-medium text-text">{c.name}</span>
+          <motion.div key={c.client_id} variants={fadeSlideUp}
+            whileHover={{ y: -3, boxShadow: '0 10px 28px rgba(0,0,0,0.08)' }}
+            transition={{ type: 'spring', stiffness: 280, damping: 22 }}
+            className="bg-white rounded-2xl border border-border p-5 relative overflow-hidden cursor-default"
+            style={{ borderLeftColor: CLIENT_COLORS[i], borderLeftWidth: 3 }}
+          >
+            <div className="absolute inset-0 bg-gradient-to-br from-transparent to-transparent pointer-events-none"
+              style={{ background: `linear-gradient(135deg, ${CLIENT_COLORS[i]}08 0%, transparent 60%)` }} />
+            <div className="flex items-center gap-2 mb-2 relative">
+              <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: CLIENT_COLORS[i] }} />
+              <span className="text-sm font-semibold text-text">{c.name}</span>
             </div>
-            <p className="text-xs text-text-secondary">Client {c.client_id} — {c.sectors.join(', ')}</p>
-            <p className="text-lg font-mono font-bold text-text mt-1">
-              {c.n_stocks} stocks
+            <p className="text-xs text-text-muted mb-1 relative">{c.sectors.join(', ')}</p>
+            <p className="text-2xl font-mono font-bold text-text relative">
+              {c.n_stocks} <span className="text-sm font-medium text-text-secondary">stocks</span>
             </p>
-          </Card>
+          </motion.div>
         ))}
-      </div>
+      </motion.div>
 
       {/* Convergence Curves */}
       <Card className="mb-6">
         <h2 className="font-display font-bold text-lg text-secondary mb-4">
           Convergence — Loss vs FL Rounds (Real Sector Data)
         </h2>
-        <ResponsiveContainer width="100%" height={350} minHeight={1}>
+        {convData.length === 0 ? (
+          <div className="flex items-center justify-center h-48 text-sm text-text-muted">
+            No convergence data — run federated training first
+          </div>
+        ) : null}
+        <ResponsiveContainer width="100%" height={convData.length === 0 ? 0 : 350} minHeight={convData.length === 0 ? 0 : 1}>
           <LineChart data={convData} margin={{ top: 10, right: 10, bottom: 0, left: 10 }}>
             <CartesianGrid stroke="#F3F4F6" strokeDasharray="3 3" vertical={false} />
             <XAxis dataKey="round" tick={{ fontSize: 12, fill: '#9CA3AF' }}
@@ -163,8 +194,10 @@ export default function Federated() {
             <Line type="monotone" dataKey="FedProx" stroke="#C15F3C" strokeWidth={3} dot={false} />
             <Line type="monotone" dataKey="FedAvg" stroke="#6366F1" strokeWidth={2.5} strokeDasharray="5 5" dot={false} />
             {clients.map((c, i) => (
-              <Line key={c.name} type="monotone" dataKey={c.name} stroke={CLIENT_COLORS[i]}
-                strokeWidth={1} strokeOpacity={0.5} dot={false} />
+              <Line key={c.name} type="monotone" dataKey={c.name}
+                name={`${c.name} (${c.n_stocks} stocks)`}
+                stroke={CLIENT_COLORS[i]} strokeWidth={1.5} strokeOpacity={0.75}
+                strokeDasharray="3 3" dot={false} />
             ))}
           </LineChart>
         </ResponsiveContainer>

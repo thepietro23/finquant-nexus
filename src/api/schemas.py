@@ -96,10 +96,10 @@ class StressTestRequest(BaseModel):
 
 class ScenarioResult(BaseModel):
     scenario: str
-    mean_return: str
-    var_95: str
-    cvar_95: str
-    survival_rate: str
+    mean_return: float
+    var_95: float
+    cvar_95: float
+    survival_rate: float
 
 
 class StressTestResponse(BaseModel):
@@ -179,6 +179,8 @@ class PortfolioSummaryResponse(BaseModel):
     holdings: list[PortfolioHolding]
     performance: list[PerformancePoint]
     sector_weights: dict[str, float]
+    data_as_of: str = ''
+    total_return_pct: float = 0.0   # cumulative return over the selected period
 
 
 # ============================================================

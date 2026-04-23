@@ -12,7 +12,7 @@ data:
   end_date: '2025-12-31'
   train_end: '2021-12-31'
   val_end: '2023-12-31'
-  risk_free_rate: 0.07        # India govt bond ~7%
+  risk_free_rate: 0.05        # Historical avg for 2015-2021 backtest period (~5%)
   transaction_cost: 0.001     # 0.1% STT + brokerage
   slippage: 0.0005            # 0.05%
   min_trading_days: 1000      # Minimum days for a stock to be included
@@ -48,6 +48,13 @@ features:
     - volatility_20d
     - volatility_60d
 
+# --- Portfolio ---
+portfolio:
+  starting_capital: 10000000  # ₹1 Crore initial capital
+  eval_days: 248              # 1-year evaluation window (trading days)
+  sparkline_days: 60          # days shown in price sparkline chart
+  train_split: 0.70           # train/validation split ratio
+
 # --- Sentiment ---
 sentiment:
   model: 'ProsusAI/finbert'
@@ -57,6 +64,11 @@ sentiment:
   max_length: 128
   decay_factor: 0.95          # Decay for days without news
   cache_db: 'data/sentiment.db'
+  news_cache_ttl: 180         # seconds before re-fetching live news
+  sentiment_threshold: 0.1   # score > threshold → positive; < -threshold → negative
+  market_mood_threshold: 0.08 # threshold for Bullish/Bearish market classification
+  sensitivity: 2.0            # how much sentiment shifts portfolio weights
+  max_news_tickers: 20        # max stocks to fetch news for (speed limit)
 
 # --- GNN ---
 gnn:
@@ -79,14 +91,14 @@ rl:
   n_epochs: 10
   clip_range: 0.2
   total_timesteps: 500000
-  max_position: 0.20          # 20% max per stock
-  stop_loss: -0.05            # -5% per stock
-  max_drawdown: -0.15         # -15% circuit breaker
+  max_position: 0.12          # 12% max per stock — forced diversification, lowers vol
+  stop_loss: -0.03            # -3% per stock — tighter exits, reduces drawdown
+  max_drawdown: -0.12         # -12% circuit breaker
   episode_length: 252         # 1 year trading days
   reward:
     sharpe_weight: 1.0
-    drawdown_penalty: 0.1
-    turnover_penalty: 0.01
+    drawdown_penalty: 0.4     # higher penalty trains agent to avoid deep drawdowns
+    turnover_penalty: 0.02    # penalize churn → lower transaction drag
 
   sac:
     lr: 0.0003
@@ -117,6 +129,17 @@ rl:
   ensemble:
     rebalance_window: 63   # ~3 months
     top_k: 3               # average top-3 models by recent Sharpe
+
+  # Algorithm-specific portfolio construction strategies (simulation)
+  ppo_momentum_scale: 80     # softmax scale for 60-day momentum signal
+  ppo_eq_blend: 0.35         # equal-weight blend fraction (diversification)
+  sac_momentum_scale: 25     # softer scale → more diversified distribution
+  sac_max_position: 0.06     # max 6% per stock (entropy / forced spread)
+  td3_reversal_days: 5       # short-term reversal lookback (days)
+  td3_reversal_scale: 60     # scale for negative short-term momentum (reversal)
+  a2c_max_position: 0.10     # inverse-vol weighting, max 10% (low-vol focused)
+  ddpg_top_k: 10             # concentrate in top-K momentum stocks only
+  ddpg_momentum_scale: 200   # aggressive scale within top-K set
 
 # --- GAN ---
 gan:

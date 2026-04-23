@@ -12,7 +12,8 @@
  * All data from real backend (no Math.random)
  */
 import { useEffect, useState, useMemo, useRef } from 'react';
-import { GitGraph } from 'lucide-react';
+import { GitGraph, MousePointer2 } from 'lucide-react';
+import { motion, AnimatePresence } from 'framer-motion';
 import { Skeleton } from '../components/ui/Skeleton';
 import { api } from '../lib/api';
 import { toast } from '../lib/toast';
@@ -21,6 +22,7 @@ import Card from '../components/ui/Card';
 import PageHeader from '../components/ui/PageHeader';
 import PageInfoPanel from '../components/ui/PageInfoPanel';
 import Badge from '../components/ui/Badge';
+import { fadeSlideUp, staggerFast } from '../lib/animations';
 
 const PAGE_INFO = {
   title: 'Graph Visualization — What Does This Page Show?',
@@ -144,7 +146,7 @@ export default function GraphVisualization() {
   useEffect(() => {
     api.gnnSummary()
       .then(d => { setGnnData(d); setLoading(false); })
-      .catch(() => setLoading(false));
+      .catch((e) => { setLoading(false); toast.error(e instanceof Error ? e.message : 'Failed to load graph data'); });
   }, []);
 
   // Build graph when data loads
@@ -266,7 +268,7 @@ export default function GraphVisualization() {
       <div className="flex flex-wrap items-center gap-3 mb-4">
         <span className="text-sm font-medium text-text-secondary">Show edges:</span>
         {(['sector', 'supply', 'correlation'] as const).map(type => (
-          <button key={type}
+          <motion.button key={type}
             onClick={() => {
               setShowEdgeType(p => {
                 const next = { ...p, [type]: !p[type] };
@@ -274,16 +276,19 @@ export default function GraphVisualization() {
                 return next;
               });
             }}
+            whileHover={{ scale: 1.05, y: -1 }}
+            whileTap={{ scale: 0.95 }}
+            transition={{ type: 'spring', stiffness: 320, damping: 22 }}
             className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium transition-all border ${
               showEdgeType[type]
-                ? 'border-current opacity-100'
+                ? 'border-current opacity-100 shadow-sm'
                 : 'border-border opacity-40'
             }`}
             style={{ color: EDGE_COLORS[type] }}
           >
             <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: EDGE_COLORS[type] }} />
             {type.charAt(0).toUpperCase() + type.slice(1)} ({edgeCounts[type]})
-          </button>
+          </motion.button>
         ))}
       </div>
 
@@ -348,68 +353,80 @@ export default function GraphVisualization() {
 
         {/* Right Panel — Details */}
         <div className="space-y-4">
-          {/* Selected Node Info */}
-          {selectedNode ? (
-            <Card>
-              <h3 className="font-display font-bold text-lg text-secondary mb-2">{selectedNode.ticker}</h3>
-              <div className="space-y-2 text-sm">
-                <div className="flex justify-between">
-                  <span className="text-text-secondary">Sector</span>
-                  <Badge variant="neutral">{selectedNode.sector}</Badge>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-text-secondary">Connections</span>
-                  <span className="font-mono font-semibold">{selectedNode.degree}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-text-secondary">Portfolio Weight</span>
-                  <span className="font-mono font-semibold">{selectedNode.weight}%</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-text-secondary">Daily Return</span>
-                  <span className={`font-mono font-semibold ${
-                    selectedNode.dailyReturn >= 0 ? 'text-profit' : 'text-loss'
-                  }`}>
-                    {selectedNode.dailyReturn > 0 ? '+' : ''}{selectedNode.dailyReturn}%
-                  </span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-text-secondary">Neighbors</span>
-                  <span className="font-mono">{connectedNodes.size}</span>
-                </div>
-              </div>
-
-              {/* Connected stocks by edge type */}
-              <h4 className="text-xs font-medium text-text-secondary mt-4 mb-2">Connected Stocks</h4>
-              <div className="flex flex-wrap gap-1.5">
-                {[...connectedNodes].slice(0, 15).map(id => {
-                  const node = nodeMap.get(id);
-                  if (!node) return null;
-                  const edge = visibleEdges.find(
-                    e => (e.source === selectedNode.id && e.target === id) ||
-                         (e.target === selectedNode.id && e.source === id)
-                  );
-                  return (
-                    <span key={id}
-                      className="text-[10px] font-mono px-2 py-0.5 rounded-md bg-bg-card border border-border-light"
-                      style={{
-                        borderLeftColor: edge ? (EDGE_COLORS[edge.type] || '#9CA3AF') : '#9CA3AF',
-                        borderLeftWidth: 2,
-                      }}>
-                      {node.ticker}
-                      {edge && <span className="text-text-muted ml-1">({edge.weight.toFixed(2)})</span>}
+          {/* Selected Node Info — animated enter/exit */}
+          <AnimatePresence mode="wait">
+            {selectedNode ? (
+              <motion.div key={`node-${selectedNode.ticker}`}
+                variants={fadeSlideUp} initial="hidden" animate="visible"
+                exit={{ opacity: 0, y: -8, transition: { duration: 0.15 } }}
+              >
+                <Card>
+                  <div className="flex items-center gap-2 mb-3">
+                    <span className="w-3 h-3 rounded-full" style={{ backgroundColor: SECTOR_COLORS[selectedNode.sector] || '#9CA3AF' }} />
+                    <h3 className="font-display font-bold text-lg text-secondary">{selectedNode.ticker}</h3>
+                    <span className={`ml-auto text-xs font-semibold px-2 py-0.5 rounded-full ${selectedNode.dailyReturn >= 0 ? 'bg-profit-light text-profit' : 'bg-loss-light text-loss'}`}>
+                      {selectedNode.dailyReturn > 0 ? '+' : ''}{selectedNode.dailyReturn}%
                     </span>
-                  );
-                })}
-              </div>
-            </Card>
-          ) : (
-            <Card cream>
-              <p className="text-sm text-text-secondary text-center py-4">
-                Click a node to view stock details and connections
-              </p>
-            </Card>
-          )}
+                  </div>
+                  <div className="space-y-2 text-sm">
+                    <div className="flex justify-between">
+                      <span className="text-text-secondary">Sector</span>
+                      <Badge variant="neutral">{selectedNode.sector}</Badge>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-text-secondary">Connections</span>
+                      <span className="font-mono font-semibold">{selectedNode.degree}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-text-secondary">Portfolio Weight</span>
+                      <span className="font-mono font-semibold">{selectedNode.weight}%</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-text-secondary">Neighbors</span>
+                      <span className="font-mono">{connectedNodes.size}</span>
+                    </div>
+                  </div>
+
+                  <h4 className="text-xs font-medium text-text-secondary mt-4 mb-2">Connected Stocks</h4>
+                  <motion.div variants={staggerFast} initial="hidden" animate="visible" className="flex flex-wrap gap-1.5">
+                    {[...connectedNodes].slice(0, 15).map(id => {
+                      const node = nodeMap.get(id);
+                      if (!node) return null;
+                      const edge = visibleEdges.find(
+                        e => (e.source === selectedNode.id && e.target === id) ||
+                             (e.target === selectedNode.id && e.source === id)
+                      );
+                      return (
+                        <motion.span key={id} variants={fadeSlideUp}
+                          className="text-[10px] font-mono px-2 py-0.5 rounded-md bg-bg-card border border-border-light"
+                          style={{
+                            borderLeftColor: edge ? (EDGE_COLORS[edge.type] || '#9CA3AF') : '#9CA3AF',
+                            borderLeftWidth: 2,
+                          }}>
+                          {node.ticker}
+                          {edge && <span className="text-text-muted ml-1">({edge.weight.toFixed(2)})</span>}
+                        </motion.span>
+                      );
+                    })}
+                  </motion.div>
+                </Card>
+              </motion.div>
+            ) : (
+              <motion.div key="empty-hint"
+                initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+              >
+                <Card cream>
+                  <div className="flex flex-col items-center gap-2 py-5 text-center">
+                    <div className="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center">
+                      <MousePointer2 size={18} className="text-primary" />
+                    </div>
+                    <p className="text-sm font-medium text-text-secondary">Click any node</p>
+                    <p className="text-xs text-text-muted">to view stock details and connections</p>
+                  </div>
+                </Card>
+              </motion.div>
+            )}
+          </AnimatePresence>
 
           {/* Legend */}
           <Card>

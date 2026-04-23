@@ -3,6 +3,9 @@
 > Step-by-step guide to run backend, frontend, and tests.
 > Last updated: 2026-04-21 (FinRL 0.3.7 fully installed — _FINRL_AVAILABLE=True, create_finrl_agent + run_finrl_baseline added)
 
+.\venv\Scripts\activate
+python -m uvicorn src.api.main:app --reload --port 8000
+
 ---
 
 ## Prerequisites

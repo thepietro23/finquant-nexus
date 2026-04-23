@@ -17,11 +17,26 @@ import {
 } from 'recharts';
 import Card from '../components/ui/Card';
 import MetricCard from '../components/ui/MetricCard';
+import type { MetricBadge } from '../components/ui/MetricCard';
 import PageHeader from '../components/ui/PageHeader';
 import PageInfoPanel from '../components/ui/PageInfoPanel';
 import MetricInfoPanel from '../components/ui/MetricInfoPanel';
 import Badge from '../components/ui/Badge';
 import { staggerContainer } from '../lib/animations';
+
+function getMoodBadge(mood: string): MetricBadge {
+  if (mood === 'Bullish')  return { label: 'BULLISH',  variant: 'profit' };
+  if (mood === 'Bearish')  return { label: 'BEARISH',  variant: 'loss' };
+  return { label: 'NEUTRAL', variant: 'neutral' };
+}
+
+function getAvgScoreBadge(score: number): MetricBadge {
+  if (score > 0.15)  return { label: 'STRONG +VE', variant: 'profit' };
+  if (score > 0.05)  return { label: 'POSITIVE',   variant: 'profit' };
+  if (score > -0.05) return { label: 'NEUTRAL',    variant: 'neutral' };
+  if (score > -0.15) return { label: 'NEGATIVE',   variant: 'loss' };
+  return { label: 'STRONG -VE', variant: 'loss' };
+}
 
 const PAGE_INFO = {
   title: 'Sentiment Monitor — What Does This Page Show?',
@@ -272,7 +287,7 @@ export default function Sentiment() {
 
   // Live news state
   const [newsData, setNewsData] = useState<NewsSentimentResponse | null>(null);
-  const [newsLoading, setNewsLoading] = useState(false);
+  const [newsLoading, setNewsLoading] = useState(true);
   const [newsError, setNewsError] = useState<string | null>(null);
   const [expandedMetric, setExpandedMetric] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'news' | 'portfolio' | 'sectors'>('news');
@@ -290,12 +305,12 @@ export default function Sentiment() {
 
   const timeAgo = useTimeAgo(lastUpdated);
 
-  function loadNewsSentiment() {
+  function loadNewsSentiment(force = false) {
     if (loadingRef.current) return;  // prevent overlapping calls
     loadingRef.current = true;
     setNewsLoading(true);
     setNewsError(null);
-    api.newsSentiment()
+    api.newsSentiment(force)
       .then(d => {
         // Track new headlines
         const incoming = new Set(d.news.map(n => n.headline))
@@ -332,11 +347,13 @@ export default function Sentiment() {
       });
   }
 
-  // Auto-refresh every 3 minutes
+  // Auto-refresh every 3 minutes — pauses when the tab is hidden to avoid wasted API calls
   useEffect(() => {
     loadNewsSentiment();
-    const id = setInterval(loadNewsSentiment, REFRESH_INTERVAL)
-    return () => clearInterval(id)
+    const id = setInterval(() => {
+      if (!document.hidden) loadNewsSentiment();
+    }, REFRESH_INTERVAL);
+    return () => clearInterval(id);
   }, []);
 
   async function analyze() {
@@ -348,7 +365,7 @@ export default function Sentiment() {
       setResult(res);
       const label = res.label ?? 'neutral';
       const icon = label === 'positive' ? '📈' : label === 'negative' ? '📉' : '➖';
-      toast.info(`${icon} FinBERT: ${label} (score ${res.score?.toFixed(3) ?? '—'})`);
+      toast.info(`${icon} FinBERT: ${label} (score ${res.score.toFixed(3)})`);
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Sentiment analysis failed — is the backend running?';
       setError(msg);
@@ -357,6 +374,14 @@ export default function Sentiment() {
       setAnalyzing(false);
     }
   }
+
+  // High-impact articles: abs(score) > 0.3, sorted strongest first, capped at 8
+  const highImpactNews = newsData
+    ? [...newsData.news]
+        .filter(n => Math.abs(n.score) > 0.3)
+        .sort((a, b) => Math.abs(b.score) - Math.abs(a.score))
+        .slice(0, 8)
+    : [];
 
   // Derived data
   const topMover = newsData?.portfolio_impact[0];
@@ -440,22 +465,26 @@ export default function Sentiment() {
             className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-2">
             <MetricCard title="Headlines Analyzed" value={newsData.n_headlines} decimals={0}
               icon={<Newspaper size={18} />}
+              badge={newsData.n_headlines >= 50 ? { label: 'RICH SIGNAL', variant: 'profit' } : newsData.n_headlines >= 20 ? { label: 'ADEQUATE', variant: 'warning' } : { label: 'LOW SIGNAL', variant: 'loss' }}
               onClick={() => setExpandedMetric(m => m === 'Headlines Analyzed' ? null : 'Headlines Analyzed')}
               active={expandedMetric === 'Headlines Analyzed'} />
             <MetricCard title="Market Mood" value={moodValue} decimals={0}
               prefix={newsData.market_mood === 'Bullish' ? '↑ ' : newsData.market_mood === 'Bearish' ? '↓ ' : '→ '}
               suffix={` ${newsData.market_mood}`}
               icon={newsData.market_mood === 'Bullish' ? <TrendingUp size={18} /> : newsData.market_mood === 'Bearish' ? <TrendingDown size={18} /> : <Minus size={18} />}
+              badge={getMoodBadge(newsData.market_mood)}
               onClick={() => setExpandedMetric(m => m === 'Market Mood' ? null : 'Market Mood')}
               active={expandedMetric === 'Market Mood'} />
             <MetricCard title="Avg Score" value={newsData.avg_score} decimals={4}
               icon={<BarChart3 size={18} />}
+              badge={getAvgScoreBadge(newsData.avg_score)}
               onClick={() => setExpandedMetric(m => m === 'Avg Score' ? null : 'Avg Score')}
               active={expandedMetric === 'Avg Score'} />
             <MetricCard title="Top Mover"
               value={topMover ? topMover.weight_change : 0} decimals={2} suffix="%"
               prefix={topMover ? `${topMover.ticker} ` : ''}
               icon={<Briefcase size={18} />}
+              badge={topMover ? (topMover.weight_change > 0 ? { label: 'OVERWEIGHT', variant: 'profit' } : { label: 'UNDERWEIGHT', variant: 'loss' }) : undefined}
               onClick={() => setExpandedMetric(m => m === 'Top Mover' ? null : 'Top Mover')}
               active={expandedMetric === 'Top Mover'} />
           </motion.div>
@@ -474,12 +503,18 @@ export default function Sentiment() {
             maxLength={500}
             className="flex-1 px-4 py-2.5 border border-border rounded-xl text-sm focus:outline-none focus:border-primary transition-colors"
           />
-          <button onClick={analyze} disabled={analyzing || !text.trim()}
+          <motion.button onClick={analyze} disabled={analyzing || !text.trim()}
+            whileHover={!analyzing ? { scale: 1.03, y: -1 } : {}}
+            whileTap={!analyzing ? { scale: 0.96 } : {}}
+            transition={{ type: 'spring', stiffness: 300, damping: 20 }}
             className="flex items-center gap-2 px-5 py-2.5 bg-primary text-white rounded-xl text-sm font-medium
-              hover:bg-primary-hover transition-colors disabled:opacity-50">
-            <Send size={16} />
-            {analyzing ? 'Analyzing...' : 'Analyze'}
-          </button>
+              hover:bg-primary-hover transition-colors disabled:opacity-50 shadow-sm">
+            <motion.span animate={analyzing ? { rotate: 360 } : { rotate: 0 }}
+              transition={analyzing ? { repeat: Infinity, duration: 0.8, ease: 'linear' } : {}}>
+              <Send size={16} />
+            </motion.span>
+            {analyzing ? 'Analyzing…' : 'Analyze'}
+          </motion.button>
         </div>
 
         {error && <p className="mt-3 text-sm text-loss">{error}</p>}
@@ -534,27 +569,29 @@ export default function Sentiment() {
             )}
           </div>
           <div className="flex items-center gap-2">
-            {/* Tab switcher */}
-            <div className="flex bg-bg-card rounded-lg border border-border-light p-0.5">
+            {/* Tab switcher with layoutId sliding pill */}
+            <div className="flex bg-bg-card rounded-lg border border-border-light p-0.5 relative">
               {(['news', 'portfolio', 'sectors'] as const).map(tab => (
                 <button key={tab} onClick={() => setActiveTab(tab)}
-                  className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all ${
-                    activeTab === tab
-                      ? 'bg-primary text-white shadow-sm'
-                      : 'text-text-secondary hover:text-text'
+                  className={`relative px-3 py-1.5 rounded-md text-xs font-medium transition-colors z-10 ${
+                    activeTab === tab ? 'text-white' : 'text-text-secondary hover:text-text'
                   }`}>
-                  {tab === 'news' ? (
-                    <span className="flex items-center gap-1">
-                      News
-                      {activeTab !== 'news' && newCount > 0 && (
-                        <span className="bg-blue-500 text-white text-[9px] font-bold px-1.5 rounded-full">+{newCount}</span>
-                      )}
-                    </span>
-                  ) : tab === 'portfolio' ? 'Portfolio Impact' : 'Sectors'}
+                  {activeTab === tab && (
+                    <motion.span layoutId="sentiment-tab-pill"
+                      className="absolute inset-0 bg-primary rounded-md shadow-sm"
+                      transition={{ type: 'spring', stiffness: 380, damping: 32 }}
+                    />
+                  )}
+                  <span className="relative z-10 flex items-center gap-1">
+                    {tab === 'news' ? 'News' : tab === 'portfolio' ? 'Portfolio Impact' : 'Sectors'}
+                    {tab === 'news' && activeTab !== 'news' && newCount > 0 && (
+                      <span className="bg-blue-500 text-white text-[9px] font-bold px-1.5 rounded-full">+{newCount}</span>
+                    )}
+                  </span>
                 </button>
               ))}
             </div>
-            <button onClick={loadNewsSentiment} disabled={newsLoading}
+            <button onClick={() => loadNewsSentiment(true)} disabled={newsLoading}
               className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-primary bg-primary-subtle rounded-lg hover:bg-primary-light transition-colors disabled:opacity-50">
               <RefreshCw size={12} className={newsLoading ? 'animate-spin' : ''} />
               {newsLoading ? 'Loading...' : 'Refresh'}
@@ -749,6 +786,73 @@ export default function Sentiment() {
           </AnimatePresence>
         )}
       </Card>
+
+      {/* ── High Impact Alerts ── */}
+      {highImpactNews.length > 0 && (
+        <Card className="mb-6">
+          <div className="flex items-center gap-3 mb-4">
+            <div className="flex items-center gap-2">
+              <Zap size={18} className="text-amber-500" />
+              <h2 className="font-display font-bold text-lg text-secondary">High Impact Alerts</h2>
+            </div>
+            <span className="text-xs bg-amber-50 text-amber-700 border border-amber-200 px-2 py-0.5 rounded-full font-medium">
+              {highImpactNews.length} strong signals
+            </span>
+            <span className="text-xs text-text-muted">abs(score) &gt; 0.30 — headlines with strongest FinBERT conviction</span>
+          </div>
+          <div className="space-y-2">
+            {highImpactNews.map((item, i) => {
+              const label = item.label as 'positive' | 'negative' | 'neutral';
+              const borderColor = label === 'positive' ? '#16A34A' : label === 'negative' ? '#DC2626' : '#F59E0B';
+              return (
+                <motion.div
+                  key={item.headline}
+                  initial={{ opacity: 0, x: -10 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  transition={{ delay: i * 0.04 }}
+                  className="flex items-center gap-3 p-3 rounded-xl border-l-4"
+                  style={{ borderLeftColor: borderColor, background: borderColor + '08', border: `1px solid ${borderColor}25`, borderLeft: `4px solid ${borderColor}` }}
+                >
+                  {/* Score badge */}
+                  <div className="shrink-0 w-12 h-12 rounded-xl flex flex-col items-center justify-center text-white text-[10px] font-bold"
+                    style={{ background: borderColor }}>
+                    <span className="text-base font-black leading-none">
+                      {item.score > 0.05 ? '▲' : item.score < -0.05 ? '▼' : '—'}
+                    </span>
+                    <span className="text-[9px] leading-none opacity-90">
+                      {item.score > 0 ? '+' : ''}{(item.score * 100).toFixed(0)}
+                    </span>
+                  </div>
+
+                  {/* Content */}
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-semibold text-text leading-snug line-clamp-2">{item.headline}</p>
+                    <div className="flex flex-wrap items-center gap-2 mt-1">
+                      {item.ticker && item.ticker !== 'MARKET' && (
+                        <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded border"
+                          style={{ color: SECTOR_COLORS[item.sector] || '#6B7280', borderColor: (SECTOR_COLORS[item.sector] || '#6B7280') + '50', background: (SECTOR_COLORS[item.sector] || '#6B7280') + '12' }}>
+                          {item.ticker}
+                        </span>
+                      )}
+                      <span className="text-[10px] text-text-muted">{item.sector}</span>
+                      {item.published && <span className="text-[10px] text-text-muted">{item.published}</span>}
+                      {item.source && <span className="text-[10px] text-text-muted italic">{item.source}</span>}
+                    </div>
+                  </div>
+
+                  {/* Abs score pill */}
+                  <div className="shrink-0 text-right">
+                    <span className="text-xs font-bold px-2 py-1 rounded-lg"
+                      style={{ color: borderColor, background: borderColor + '15' }}>
+                      {(Math.abs(item.score) * 100).toFixed(0)}% conf
+                    </span>
+                  </div>
+                </motion.div>
+              );
+            })}
+          </div>
+        </Card>
+      )}
 
       {/* Score Distribution */}
       {newsData && distData.length > 0 && (

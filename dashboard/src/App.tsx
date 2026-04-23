@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import DashboardLayout from './components/layout/DashboardLayout';
 import Portfolio from './pages/Portfolio';
 import RlAgent from './pages/RlAgent';
@@ -21,6 +21,8 @@ export default function App() {
           <Route path="sentiment" element={<Sentiment />} />
           <Route path="graph" element={<GraphVisualization />} />
           <Route path="workflow" element={<WorkflowViz />} />
+          {/* Catch-all: redirect unknown routes to Portfolio */}
+          <Route path="*" element={<Navigate to="/" replace />} />
         </Route>
       </Routes>
       <ToastContainer />

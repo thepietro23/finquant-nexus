@@ -370,13 +370,20 @@ export default function WorkflowViz() {
         </div>
         {/* Controls */}
         <div className="flex items-center gap-2">
-          <button onClick={handleReset}
+          <motion.button onClick={handleReset}
+            whileHover={{ scale: 1.04, y: -1 }} whileTap={{ scale: 0.95 }}
+            transition={{ type: 'spring', stiffness: 320, damping: 22 }}
             className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-text-secondary bg-bg-card border border-border rounded-xl hover:bg-bg-card/80 transition-colors">
-            <RotateCcw size={14} />
+            <motion.span animate={playing ? { rotate: -360 } : { rotate: 0 }}
+              transition={playing ? { repeat: Infinity, duration: 2, ease: 'linear' } : {}}>
+              <RotateCcw size={14} />
+            </motion.span>
             Reset
-          </button>
-          <button onClick={handlePlay}
-            className={`flex items-center gap-1.5 px-4 py-2 text-sm font-semibold rounded-xl transition-all ${
+          </motion.button>
+          <motion.button onClick={handlePlay}
+            whileHover={{ scale: 1.04, y: -1 }} whileTap={{ scale: 0.95 }}
+            transition={{ type: 'spring', stiffness: 320, damping: 22 }}
+            className={`flex items-center gap-1.5 px-4 py-2 text-sm font-semibold rounded-xl transition-all shadow-sm ${
               isDone
                 ? 'bg-primary text-white hover:bg-primary/90'
                 : playing
@@ -384,7 +391,7 @@ export default function WorkflowViz() {
                   : 'bg-primary text-white hover:bg-primary/90'
             }`}>
             {playing ? <><Pause size={14} /> Pause</> : isDone ? <><Play size={14} /> Replay</> : <><Play size={14} /> Play</>}
-          </button>
+          </motion.button>
         </div>
       </div>
 
@@ -675,26 +682,35 @@ export default function WorkflowViz() {
             <p className="text-xs font-bold uppercase tracking-widest text-text-muted mb-3">Pipeline Stages</p>
             <div className="space-y-1">
               {PLAY_SEQUENCE.map((group, i) => (
-                <button key={i} onClick={() => {
-                  const newActive = new Set<string>()
-                  for (let j = 0; j <= i; j++) PLAY_SEQUENCE[j].forEach(n => newActive.add(n))
-                  setActiveNodes(newActive)
-                  setStep(i)
-                  setSelected(group[group.length - 1])
-                  setPlaying(false)
-                }}
-                  className={`w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-lg text-left text-xs transition-colors ${
-                    step === i ? 'bg-primary-subtle text-primary font-semibold'
+                <motion.button key={i}
+                  whileHover={{ x: 2 }} whileTap={{ scale: 0.98 }}
+                  transition={{ type: 'spring', stiffness: 320, damping: 24 }}
+                  onClick={() => {
+                    const newActive = new Set<string>()
+                    for (let j = 0; j <= i; j++) PLAY_SEQUENCE[j].forEach(n => newActive.add(n))
+                    setActiveNodes(newActive)
+                    setStep(i)
+                    setSelected(group[group.length - 1])
+                    setPlaying(false)
+                  }}
+                  className={`relative w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-lg text-left text-xs transition-colors ${
+                    step === i ? 'text-primary font-semibold'
                     : step > i ? 'text-[#16A34A] font-medium'
                     : 'text-text-secondary hover:bg-bg-card'
                   }`}>
-                  <span className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0 ${
+                  {step === i && (
+                    <motion.span layoutId="stage-active-bg"
+                      className="absolute inset-0 bg-primary-subtle rounded-lg"
+                      transition={{ type: 'spring', stiffness: 380, damping: 32 }}
+                    />
+                  )}
+                  <span className={`relative z-10 w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0 ${
                     step > i ? 'bg-[#16A34A] text-white' :
                     step === i ? 'bg-primary text-white' :
                     'bg-border text-text-muted'
                   }`}>{step > i ? '✓' : i + 1}</span>
-                  <span className="truncate">{STAGE_LABELS[i].slice(4)}</span>
-                </button>
+                  <span className="relative z-10 truncate">{STAGE_LABELS[i].slice(4)}</span>
+                </motion.button>
               ))}
             </div>
           </div>
