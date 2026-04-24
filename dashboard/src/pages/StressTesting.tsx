@@ -17,14 +17,14 @@ import MetricInfoPanel from '../components/ui/MetricInfoPanel';
 import { staggerContainer, staggerFast, fadeSlideUp } from '../lib/animations';
 
 const PAGE_INFO = {
-  title: 'Stress Testing — What Does This Page Show?',
+  title: 'Stress Testing — How to Use This Tab',
   sections: [
-    { heading: 'What is stress testing?', text: 'Tests your portfolio against extreme market conditions using Monte Carlo simulation. Generates thousands of possible future scenarios to estimate risk metrics like VaR and CVaR.' },
-    { heading: 'Monte Carlo simulation', text: 'Randomly generates thousands of future price paths based on historical statistics (mean, volatility, correlations). Like rolling dice 10,000 times to see what could happen.' },
-    { heading: '4 crash scenarios', text: 'Normal (typical market), 2008 Crisis (3.5% daily vol, +30% correlation), COVID Crash (5% vol, +40% corr), Flash Crash (8% vol, 5 days). Each models a real historical pattern.' },
-    { heading: 'VaR (Value at Risk)', text: '95% VaR = "with 95% confidence, the portfolio will NOT lose more than this amount." It is a threshold — the boundary of the worst 5% outcomes.' },
-    { heading: 'CVaR (Conditional VaR)', text: 'Also called Expected Shortfall. "If you ARE in the worst 5%, what is the average loss?" CVaR is always worse than VaR and is considered more conservative.' },
-    { heading: 'Survival rate', text: 'Percentage of simulations where the portfolio stays above a minimum threshold (does not get wiped out). Higher = more resilient portfolio.' },
+    { heading: 'Step 1 — Configure & Run', text: 'Set "Stocks" = how many of the 47 NIFTY 50 stocks to include (2–47). Set "Simulations" = 1,000 for a quick check, 10,000 for accurate VaR, 50,000 for stable numbers. Hit "Generate Stress Test". Each simulation draws returns from real 2015–2025 NIFTY 50 CSV data — no synthetic or hardcoded values.' },
+    { heading: 'Step 2 — Read VaR (Value at Risk)', text: 'VaR 95% answers: "With 95% confidence, my portfolio will NOT lose more than X% under this scenario." Example: Normal VaR = −3.2% → only 5 out of 100 simulated paths were worse. Closer to 0 = safer. This metric satisfies Basel III regulatory requirements.' },
+    { heading: 'Step 3 — Read CVaR (Expected Shortfall)', text: 'CVaR = average loss across the worst 5% of scenarios. Always worse than VaR — if VaR = −3% but CVaR = −9%, your tail risk is severe (fat tails). CVaR close to VaR = thin tails = healthy. This is the academically preferred risk measure over VaR for Indian equity portfolios.' },
+    { heading: 'Step 4 — Check Survival Rate', text: 'Survival Rate = % of Monte Carlo paths where portfolio never breached −15% drawdown (same circuit breaker used by the RL agent). Below 90% = over-concentration risk. Solution: increase stock count or switch to Smart Optimize on the Portfolio tab.' },
+    { heading: '8 Crisis Scenarios', text: 'Normal (baseline, 1 year), 2008 Global Crisis (5 months, +30% cross-sector correlation spike), COVID Crash (1 month, extreme drawdown), Flash Crash (5-day tail event), Dot-com 2000 (8-month IT selloff), India Bear 2015 (China slowdown, Yuan devaluation, 6 months), Rate Hike 2022 (RBI rate cycle, slow 7-month bleed), Geopolitical Shock (45-day Russia/Ukraine-type event with oil spike).' },
+    { heading: 'What good numbers look like', text: 'Normal scenario: VaR > −5%, CVaR > −8%, Survival > 95%. Historical crisis scenarios: Survival > 80%. Flash Crash: >70% survival is acceptable for a diversified NIFTY 50 portfolio. Any crisis survival < 60% = portfolio is too concentrated in correlated sectors.' },
   ],
 };
 
@@ -49,12 +49,16 @@ const METRIC_DETAILS: Record<string, { what: string; why: string; how: string; g
   },
 };
 
-// Scenario display config
+// Scenario display config — keys must match backend CRASH_SCENARIOS keys exactly
 const SCENARIO_CONFIG: Record<string, { label: string; danger: 'low' | 'medium' | 'high' | 'extreme'; rowBg: string; badgeVariant: MetricBadge['variant'] }> = {
-  normal:      { label: 'NORMAL',       danger: 'low',     rowBg: 'bg-transparent',         badgeVariant: 'profit' },
-  '2008_crisis': { label: '2008 CRISIS', danger: 'medium',  rowBg: 'bg-amber-50/40',         badgeVariant: 'warning' },
-  covid_crash: { label: 'COVID CRASH',  danger: 'high',    rowBg: 'bg-loss-light/30',        badgeVariant: 'loss' },
-  flash_crash: { label: 'FLASH CRASH',  danger: 'extreme', rowBg: 'bg-loss-light/50',        badgeVariant: 'loss' },
+  normal:         { label: 'NORMAL',          danger: 'low',     rowBg: 'bg-transparent',      badgeVariant: 'profit' },
+  crash_2008:     { label: '2008 CRISIS',     danger: 'medium',  rowBg: 'bg-amber-50/40',      badgeVariant: 'warning' },
+  crash_covid:    { label: 'COVID CRASH',     danger: 'high',    rowBg: 'bg-loss-light/30',    badgeVariant: 'loss' },
+  flash_crash:    { label: 'FLASH CRASH',     danger: 'extreme', rowBg: 'bg-loss-light/50',    badgeVariant: 'loss' },
+  dot_com_2000:   { label: 'DOT-COM 2000',    danger: 'medium',  rowBg: 'bg-amber-50/30',      badgeVariant: 'warning' },
+  india_bear_2015:{ label: 'INDIA BEAR 2015', danger: 'medium',  rowBg: 'bg-amber-50/20',      badgeVariant: 'warning' },
+  rate_hike_2022: { label: 'RATE HIKE 2022',  danger: 'medium',  rowBg: 'bg-amber-50/10',      badgeVariant: 'warning' },
+  geopolitical:   { label: 'GEO-POLITICAL',   danger: 'high',    rowBg: 'bg-loss-light/25',    badgeVariant: 'loss' },
 };
 
 const DANGER_DOT: Record<string, string> = {
@@ -63,6 +67,10 @@ const DANGER_DOT: Record<string, string> = {
   high:    'bg-loss',
   extreme: 'bg-red-700',
 };
+
+function safeNum(v: number | null | undefined, fallback = 0): number {
+  return (v == null || !isFinite(v)) ? fallback : v;
+}
 
 function getVarBadge(var95: number): MetricBadge {
   if (var95 > -0.01) return { label: 'LOW RISK', variant: 'profit' };
@@ -143,7 +151,7 @@ export default function StressTesting() {
       <div className="flex items-center justify-between">
         <PageHeader
           title="Stress Testing"
-          subtitle="VaR, CVaR, Monte Carlo simulation — 4 crash scenarios"
+          subtitle="VaR, CVaR, Monte Carlo simulation — 8 crisis scenarios on real NIFTY 50 data"
           icon={<AlertTriangle size={24} />}
         />
         <PageInfoPanel title={PAGE_INFO.title} sections={PAGE_INFO.sections} />
@@ -213,10 +221,19 @@ export default function StressTesting() {
                 </p>
               </div>
               <div className="flex flex-wrap justify-center items-center gap-2 text-xs text-text-muted mt-1">
-                {['Normal Market', '2008 Crisis', 'COVID Crash', 'Flash Crash'].map((s, i) => (
+                {[
+                  { label: 'Normal Market',    color: 'bg-profit' },
+                  { label: '2008 Crisis',      color: 'bg-amber-400' },
+                  { label: 'COVID Crash',      color: 'bg-loss' },
+                  { label: 'Flash Crash',      color: 'bg-red-700' },
+                  { label: 'Dot-com 2000',     color: 'bg-amber-400' },
+                  { label: 'India Bear 2015',  color: 'bg-amber-400' },
+                  { label: 'Rate Hike 2022',   color: 'bg-amber-400' },
+                  { label: 'Geo-political',    color: 'bg-loss' },
+                ].map((s, i) => (
                   <span key={i} className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-bg-cream border border-border">
-                    <span className={`w-1.5 h-1.5 rounded-full ${i === 0 ? 'bg-profit' : i === 1 ? 'bg-amber-400' : 'bg-loss'}`} />
-                    {s}
+                    <span className={`w-1.5 h-1.5 rounded-full ${s.color}`} />
+                    {s.label}
                   </span>
                 ))}
               </div>
@@ -321,9 +338,9 @@ export default function StressTesting() {
                               </span>
                             </div>
                           </td>
-                          <td className="py-3 text-right font-mono">{(s.mean_return * 100).toFixed(2)}%</td>
-                          <td className="py-3 text-right font-mono text-loss">{(s.var_95 * 100).toFixed(2)}%</td>
-                          <td className="py-3 text-right font-mono text-loss">{(s.cvar_95 * 100).toFixed(2)}%</td>
+                          <td className="py-3 text-right font-mono">{(safeNum(s.mean_return) * 100).toFixed(2)}%</td>
+                          <td className="py-3 text-right font-mono text-loss">{(safeNum(s.var_95) * 100).toFixed(2)}%</td>
+                          <td className="py-3 text-right font-mono text-loss">{(safeNum(s.cvar_95) * 100).toFixed(2)}%</td>
                           <td className="py-3 pl-6">
                             <div className="flex items-center gap-2 min-w-[100px]">
                               <div className="flex-1 h-1.5 bg-border rounded-full overflow-hidden">
@@ -334,7 +351,7 @@ export default function StressTesting() {
                                   transition={{ duration: 0.8, ease: 'easeOut', delay: 0.2 }}
                                 />
                               </div>
-                              <span className="font-mono text-xs w-12 text-right">{(survivalPct).toFixed(1)}%</span>
+                              <span className="font-mono text-xs w-12 text-right">{safeNum(survivalPct).toFixed(1)}%</span>
                             </div>
                           </td>
                         </motion.tr>

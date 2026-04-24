@@ -6,9 +6,9 @@
    ============================================================ */
 
 @theme {
-  --color-bg: #FFFFFF;
+  --color-bg: #F5F6F8;
   --color-bg-cream: #FFF7ED;
-  --color-bg-card: #F9FAFB;
+  --color-bg-card: #F0F1F4;
   --color-primary: #C15F3C;
   --color-primary-hover: #A34E30;
   --color-primary-light: #F8D5C8;
@@ -24,8 +24,8 @@
   --color-info: #3B82F6;
   --color-accent-indigo: #6366F1;
   --color-accent-teal: #0D9488;
-  --color-border: #E5E7EB;
-  --color-border-light: #F3F4F6;
+  --color-border: #E2E4E9;
+  --color-border-light: #ECEEF2;
   --color-secondary: #1A1A2E;
 
   --font-display: 'Plus Jakarta Sans', 'Inter', sans-serif;
@@ -35,9 +35,9 @@
 
 /* ── Dark Mode Overrides ── */
 [data-theme="dark"] {
-  --color-bg: #0F0F14;
-  --color-bg-cream: #1A1A2E;
-  --color-bg-card: #16162A;
+  --color-bg: #0D0D12;
+  --color-bg-cream: #191928;
+  --color-bg-card: #14141F;
   --color-text: #F3F4F6;
   --color-text-secondary: #9CA3AF;
   --color-text-muted: #6B7280;

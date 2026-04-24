@@ -89,8 +89,10 @@ class BatchSentimentResponse(BaseModel):
 class StressTestRequest(BaseModel):
     n_stocks: int = Field(default=10, ge=2, le=47)
     n_simulations: int = Field(default=1000, ge=100, le=50000)
-    scenarios: list[str] = Field(
-        default=["normal", "crash_2008", "crash_covid", "flash_crash"]
+    # None = all 8 scenarios; pass a subset to limit which ones are returned.
+    scenarios: list[str] | None = Field(
+        default=None,
+        description="Scenario keys to include. Omit or null for all scenarios.",
     )
 
 
@@ -180,7 +182,8 @@ class PortfolioSummaryResponse(BaseModel):
     performance: list[PerformancePoint]
     sector_weights: dict[str, float]
     data_as_of: str = ''
-    total_return_pct: float = 0.0   # cumulative return over the selected period
+    total_return_pct: float = 0.0
+    csv_date_start: str = ''   # earliest date in the full CSV (for date picker min)
 
 
 # ============================================================
@@ -480,6 +483,7 @@ class GrowthPoint(BaseModel):
 class GrowthRequest(BaseModel):
     amount: float = Field(..., gt=0, description="Initial investment in ₹")
     start_date: str = Field(..., description="Start date YYYY-MM-DD")
+    end_date: Optional[str] = Field(None, description="End date YYYY-MM-DD (defaults to latest CSV date)")
 
 class GrowthResponse(BaseModel):
     amount: float
@@ -496,3 +500,128 @@ class GrowthResponse(BaseModel):
     nifty_profit: float
     fd_profit: float
     series: list[GrowthPoint]
+
+
+# ============================================================
+# SMART PORTFOLIO (RL + Sentiment + FL blend → Max Sharpe)
+# ============================================================
+
+class SmartSignalBreakdown(BaseModel):
+    rl_sharpe: float        # Sharpe using only RL momentum weights
+    sentiment_sharpe: float # Sharpe using only sentiment-adjusted weights
+    fl_sharpe: float        # Sharpe using only FL sector weights
+    blended_sharpe: float   # Sharpe of blended prior (before SLSQP)
+    final_sharpe: float     # Sharpe after SLSQP optimization from blended prior
+
+class SmartPortfolioResponse(BaseModel):
+    method: str             # "RL Momentum (40%) + Sentiment (40%) + FL Sector (20%) → Max Sharpe"
+    equal_sharpe: float
+    smart_sharpe: float
+    sharpe_improvement: float
+    equal_sortino: float
+    smart_sortino: float
+    equal_return: float
+    smart_return: float
+    equal_volatility: float
+    smart_volatility: float
+    equal_drawdown: float
+    smart_drawdown: float
+    signals: SmartSignalBreakdown
+    weights: list['OptimizedStock']  # forward ref — OptimizedStock defined below
+
+
+# ============================================================
+# LIVE PORTFOLIO (real-time intraday prices)
+# ============================================================
+
+class LiveStockPrice(BaseModel):
+    ticker: str
+    sector: str
+    weight: float          # equal-weight %
+    current_price: float
+    prev_close: float
+    change_pct: float      # intraday % change
+    is_live: bool          # True = yfinance live, False = CSV fallback
+
+class LivePortfolioResponse(BaseModel):
+    is_market_open: bool
+    last_updated: str      # HH:MM:SS IST
+    portfolio_change_pct: float   # equal-weight portfolio intraday change
+    portfolio_change_abs: float   # absolute ₹ change per ₹1 invested (ratio)
+    stocks: list[LiveStockPrice]
+
+
+# ============================================================
+# PORTFOLIO OPTIMIZATION (Max Sharpe ratio)
+# ============================================================
+
+class OptimizedStock(BaseModel):
+    ticker: str
+    sector: str
+    equal_weight: float       # 1/n %
+    optimized_weight: float   # scipy max-Sharpe %
+
+class OptimizedPortfolioResponse(BaseModel):
+    method: str               # "Max Sharpe (SLSQP)"
+    equal_sharpe: float
+    optimized_sharpe: float
+    sharpe_improvement: float # optimized - equal
+    equal_sortino: float
+    optimized_sortino: float
+    equal_return: float       # annualized %
+    optimized_return: float
+    equal_volatility: float
+    optimized_volatility: float
+    equal_drawdown: float
+    optimized_drawdown: float
+    weights: list[OptimizedStock]
+
+
+# ============================================================
+# FUTURE PREDICTION (Block-Bootstrap forward simulation)
+# ============================================================
+
+class PercentileBand(BaseModel):
+    day: int
+    p5: float
+    p25: float
+    p50: float
+    p75: float
+    p95: float
+
+class AlgoFutureStat(BaseModel):
+    algo: str
+    expected_return: float      # mean annualized return %
+    best_case: float            # 95th percentile annualized %
+    worst_case: float           # 5th percentile annualized %
+    sharpe: float               # simulated cross-scenario Sharpe
+    probability_profit: float   # % of scenarios with return > 0
+
+class ReturnBucket(BaseModel):
+    bucket: str                 # e.g. "10 to 20%"
+    count: int
+    pct: float                  # % of scenarios in this bucket
+
+class ScenarioPath(BaseModel):
+    day: int
+    value: float                # portfolio value (₹ per ₹1 invested)
+
+class ForwardAlloc(BaseModel):
+    ticker: str
+    sector: str
+    weight: float               # ensemble weight %
+
+class FuturePredictionResponse(BaseModel):
+    horizon_days: int
+    n_scenarios: int
+    seed_days: int              # history rows used for bootstrap
+    method: str                 # "Block Bootstrap (GAN-calibrated, 20-day blocks)"
+    percentile_bands: list[PercentileBand]
+    sample_paths: list[list[ScenarioPath]]   # 10 representative paths
+    algo_stats: list[AlgoFutureStat]
+    return_distribution: list[ReturnBucket]
+    forward_allocation: list[ForwardAlloc]
+    median_return: float        # p50 annualized %
+    best_case_return: float     # p95 annualized %
+    worst_case_return: float    # p5 annualized %
+    probability_profit: float   # % scenarios where final value > initial

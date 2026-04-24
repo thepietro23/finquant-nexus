@@ -68,10 +68,16 @@ def update_price_data(data_dir: str = 'data', force: bool = False) -> dict:
 
         if gap_days < 1:
             # Data is already current — nothing to download regardless of force flag.
-            # Trying to download from tomorrow would produce "Data doesn't exist" errors.
             logger.info(f'Price data is up to date (last: {last_date.date()})')
             _last_update = datetime.now()
             return {'status': 'skipped', 'added_rows': 0, 'gap_days': 0}
+
+        if gap_days == 1 and not force:
+            # Gap is just today — intraday data not finalized until market close (3:30 PM IST).
+            # Skip to avoid hammering Yahoo with 45 requests for data that doesn't exist yet.
+            logger.info(f'Gap is only today ({today.date()}) — skipping until market close')
+            _last_update = datetime.now()
+            return {'status': 'skipped', 'added_rows': 0, 'gap_days': gap_days}
 
         start = (last_date + timedelta(days=1)).strftime('%Y-%m-%d')
         end = (today + timedelta(days=1)).strftime('%Y-%m-%d')  # yfinance end is exclusive
@@ -112,9 +118,13 @@ def update_price_data(data_dir: str = 'data', force: bool = False) -> dict:
         missing = [t for t in tickers if t not in new_close]
         if missing:
             logger.info(f'Per-ticker fallback for {len(missing)} tickers')
+            if len(missing) == len(tickers):
+                # Entire batch failed — Yahoo rate limit active; wait before per-ticker
+                logger.info('Batch fully failed — waiting 30s before per-ticker fallback')
+                time.sleep(30.0)
             for i, ticker in enumerate(missing):
                 if i > 0:
-                    time.sleep(3.0)  # longer delay to avoid rate limits
+                    time.sleep(5.0)  # 5s gap to stay under Yahoo rate limit
                 try:
                     df = download_stock(ticker, start, end, retries=3, backoff=4.0)
                     if df is not None and not df.empty and 'Adj Close' in df.columns:

@@ -97,6 +97,7 @@ export interface PortfolioSummaryResponse {
   sector_weights: Record<string, number>;
   data_as_of: string;
   total_return_pct: number;
+  csv_date_start: string;
 }
 
 export interface DataRefreshResponse {
@@ -302,10 +303,30 @@ export const api = {
   newsSentiment: (force = false) =>
     fetchJSON<NewsSentimentResponse>(`/news-sentiment${force ? '?force=true' : ''}`, undefined, 120_000),
 
-  portfolioGrowth: (amount: number, start_date: string) =>
+  portfolioGrowth: (amount: number, start_date: string, end_date?: string) =>
     fetchJSON<GrowthResponse>('/portfolio-growth', {
-      method: 'POST', body: JSON.stringify({ amount, start_date }),
+      method: 'POST', body: JSON.stringify({ amount, start_date, end_date }),
     }),
+
+  livePortfolio: () =>
+    fetchJSON<LivePortfolioResponse>('/live-portfolio', undefined, 20_000),
+
+  portfolioOptimized: (params?: { start_date?: string; end_date?: string }) => {
+    const qs = params ? '?' + new URLSearchParams(params as Record<string, string>).toString() : '';
+    return fetchJSON<OptimizedPortfolioResponse>(`/portfolio-optimized${qs}`, undefined, 60_000);
+  },
+
+  portfolioSmart: (params?: { start_date?: string; end_date?: string }) => {
+    const qs = params ? '?' + new URLSearchParams(params as Record<string, string>).toString() : '';
+    return fetchJSON<SmartPortfolioResponse>(`/portfolio-smart${qs}`, undefined, 90_000);
+  },
+
+  futurePrediction: (n_scenarios = 1000, horizon_days = 252) =>
+    fetchJSON<FuturePredictionResponse>(
+      `/future-prediction?n_scenarios=${n_scenarios}&horizon_days=${horizon_days}`,
+      undefined,
+      60_000,
+    ),
 };
 
 // --- Portfolio Growth types ---
@@ -318,4 +339,71 @@ export interface GrowthResponse {
   portfolio_return_pct: number; nifty_return_pct: number; fd_return_pct: number;
   portfolio_profit: number; nifty_profit: number; fd_profit: number;
   series: GrowthPoint[];
+}
+
+// --- Live Portfolio types ---
+export interface LiveStockPrice {
+  ticker: string; sector: string; weight: number;
+  current_price: number; prev_close: number;
+  change_pct: number; is_live: boolean;
+}
+export interface LivePortfolioResponse {
+  is_market_open: boolean;
+  last_updated: string;
+  portfolio_change_pct: number;
+  portfolio_change_abs: number;
+  stocks: LiveStockPrice[];
+}
+
+// --- Portfolio Optimization types ---
+export interface OptimizedStock {
+  ticker: string; sector: string;
+  equal_weight: number; optimized_weight: number;
+}
+export interface OptimizedPortfolioResponse {
+  method: string;
+  equal_sharpe: number; optimized_sharpe: number; sharpe_improvement: number;
+  equal_sortino: number; optimized_sortino: number;
+  equal_return: number; optimized_return: number;
+  equal_volatility: number; optimized_volatility: number;
+  equal_drawdown: number; optimized_drawdown: number;
+  weights: OptimizedStock[];
+}
+
+// --- Future Prediction types ---
+export interface PercentileBand {
+  day: number; p5: number; p25: number; p50: number; p75: number; p95: number;
+}
+export interface AlgoFutureStat {
+  algo: string; expected_return: number; best_case: number; worst_case: number;
+  sharpe: number; probability_profit: number;
+}
+export interface ReturnBucket { bucket: string; count: number; pct: number }
+export interface ScenarioPath { day: number; value: number }
+export interface ForwardAlloc { ticker: string; sector: string; weight: number }
+export interface FuturePredictionResponse {
+  horizon_days: number; n_scenarios: number; seed_days: number; method: string;
+  percentile_bands: PercentileBand[];
+  sample_paths: ScenarioPath[][];
+  algo_stats: AlgoFutureStat[];
+  return_distribution: ReturnBucket[];
+  forward_allocation: ForwardAlloc[];
+  median_return: number; best_case_return: number;
+  worst_case_return: number; probability_profit: number;
+}
+
+// --- Smart Portfolio types ---
+export interface SmartSignalBreakdown {
+  rl_sharpe: number; sentiment_sharpe: number;
+  fl_sharpe: number; blended_sharpe: number; final_sharpe: number;
+}
+export interface SmartPortfolioResponse {
+  method: string;
+  equal_sharpe: number; smart_sharpe: number; sharpe_improvement: number;
+  equal_sortino: number; smart_sortino: number;
+  equal_return: number; smart_return: number;
+  equal_volatility: number; smart_volatility: number;
+  equal_drawdown: number; smart_drawdown: number;
+  signals: SmartSignalBreakdown;
+  weights: OptimizedStock[];
 }

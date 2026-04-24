@@ -1,8 +1,8 @@
 import numpy as np
 
 
-def sharpe_ratio(returns, rf=0.07, periods=248):
-    """Annualized Sharpe Ratio. rf=7% (India govt bond)."""
+def sharpe_ratio(returns, rf=0.05, periods=248):
+    """Annualized Sharpe Ratio. rf defaults to 5% (historical India avg for backtest period)."""
     excess = returns - rf / periods
     std = excess.std()
     if std == 0 or np.isnan(std):
@@ -20,7 +20,7 @@ def max_drawdown(portfolio_values):
     return float(drawdown.min())
 
 
-def sortino_ratio(returns, rf=0.07, periods=248):
+def sortino_ratio(returns, rf=0.05, periods=248):
     """Annualized Sortino Ratio. Penalizes only downside volatility."""
     excess = returns - rf / periods
     downside = excess[excess < 0]
@@ -29,7 +29,7 @@ def sortino_ratio(returns, rf=0.07, periods=248):
     return float(np.sqrt(periods) * excess.mean() / downside.std())
 
 
-def calmar_ratio(returns, portfolio_values, rf=0.07):
+def calmar_ratio(returns, portfolio_values, rf=0.05):
     """Calmar Ratio = Annualized return / Max drawdown."""
     if len(returns) == 0:
         return 0.0

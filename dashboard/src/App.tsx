@@ -7,6 +7,7 @@ import Federated from './pages/Federated';
 import Sentiment from './pages/Sentiment';
 import GraphVisualization from './pages/GraphVisualization';
 import WorkflowViz from './pages/WorkflowViz';
+import FuturePrediction from './pages/FuturePrediction';
 import ToastContainer from './components/ui/Toast';
 
 export default function App() {
@@ -21,6 +22,7 @@ export default function App() {
           <Route path="sentiment" element={<Sentiment />} />
           <Route path="graph" element={<GraphVisualization />} />
           <Route path="workflow" element={<WorkflowViz />} />
+          <Route path="future" element={<FuturePrediction />} />
           {/* Catch-all: redirect unknown routes to Portfolio */}
           <Route path="*" element={<Navigate to="/" replace />} />
         </Route>

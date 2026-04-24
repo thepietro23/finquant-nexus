@@ -2,7 +2,7 @@ import { NavLink } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   PieChart, Brain, AlertTriangle,
-  Users, MessageSquare, GitGraph, Workflow,
+  Users, MessageSquare, GitGraph, Workflow, TrendingUp,
   Settings, ExternalLink, ChevronLeft, ChevronRight,
 } from 'lucide-react';
 import { useState } from 'react';
@@ -15,6 +15,7 @@ const navItems = [
   { to: '/sentiment', icon: MessageSquare, label: 'Sentiment' },
   { to: '/graph', icon: GitGraph, label: 'Graph Viz' },
   { to: '/workflow', icon: Workflow, label: 'Pipeline' },
+  { to: '/future', icon: TrendingUp, label: 'Future Prediction' },
 ];
 
 export default function Sidebar() {
@@ -24,7 +25,7 @@ export default function Sidebar() {
     <motion.aside
       animate={{ width: collapsed ? 72 : 260 }}
       transition={{ type: 'spring', stiffness: 200, damping: 25 }}
-      className="h-screen sticky top-0 bg-white/95 backdrop-blur-sm border-r border-border flex flex-col z-30"
+      className="h-screen sticky top-0 bg-white shadow-[1px_0_0_0_#E2E4E9] flex flex-col z-30"
     >
       {/* Logo */}
       <div className="flex items-center gap-3 px-5 py-6 border-b border-border">
@@ -61,10 +62,10 @@ export default function Sidebar() {
             end={to === '/'}
             title={collapsed ? label : undefined}
             className={({ isActive }) =>
-              `group relative flex items-center gap-3 mx-2 my-0.5 px-3 py-2.5 rounded-xl text-sm font-medium transition-colors duration-150 ${
+              `group relative flex items-center gap-3 mx-2 my-0.5 px-3 py-2.5 rounded-xl text-sm font-medium transition-all duration-150 ${
                 isActive
-                  ? 'bg-primary-subtle text-primary border-l-[3px] border-primary'
-                  : 'text-text-secondary hover:bg-bg-card hover:text-text'
+                  ? 'bg-primary/[0.08] text-primary'
+                  : 'text-text-secondary hover:bg-[#F5F6F8] hover:text-text'
               }`
             }
           >

@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   MessageSquare, Send, TrendingUp, TrendingDown, Minus,
-  Newspaper, PieChart, ArrowUpRight, ArrowDownRight, RefreshCw,
+  Newspaper, ArrowUpRight, ArrowDownRight, RefreshCw,
   BarChart3, Briefcase, ChevronDown, ChevronUp, Zap, Activity,
 } from 'lucide-react';
 import { api } from '../lib/api';
@@ -24,6 +24,11 @@ import MetricInfoPanel from '../components/ui/MetricInfoPanel';
 import Badge from '../components/ui/Badge';
 import { staggerContainer } from '../lib/animations';
 
+function safeNum(v: unknown, fallback = 0): number {
+  const n = Number(v);
+  return isFinite(n) ? n : fallback;
+}
+
 function getMoodBadge(mood: string): MetricBadge {
   if (mood === 'Bullish')  return { label: 'BULLISH',  variant: 'profit' };
   if (mood === 'Bearish')  return { label: 'BEARISH',  variant: 'loss' };
@@ -39,14 +44,14 @@ function getAvgScoreBadge(score: number): MetricBadge {
 }
 
 const PAGE_INFO = {
-  title: 'Sentiment Monitor — What Does This Page Show?',
+  title: 'Sentiment Monitor — How to Use This Tab',
   sections: [
-    { heading: 'What is this page?', text: 'Uses FinBERT (a BERT model fine-tuned on financial text) to analyze real-time financial news from Google News RSS. Score ranges from -1 (very negative) to +1 (very positive).' },
-    { heading: 'Live news feed', text: 'Real headlines fetched from Google News for 20 key NIFTY 50 stocks + market-wide queries. Each headline is analyzed by FinBERT in real-time — no mock data.' },
-    { heading: 'Portfolio impact', text: 'Sentiment-adjusted weights: positive news → higher allocation, negative → lower. Shows how news could shift your portfolio vs equal-weight baseline.' },
-    { heading: 'Sector sentiment', text: 'Aggregated sentiment per sector from multiple headlines. Helps identify which sectors have positive/negative news momentum right now.' },
-    { heading: 'Why FinBERT?', text: 'General NLP models misinterpret financial language ("bearish" is negative in finance, neutral elsewhere). FinBERT was trained on 10,000+ financial texts for domain-specific accuracy.' },
-    { heading: 'How is it used?', text: 'Sentiment scores are fed as input features to the RL agent. The agent considers market mood (from news) alongside price data when making allocation decisions.' },
+    { heading: '1. What is this tab?', text: 'Live financial news sentiment powered by FinBERT — a BERT model fine-tuned on 10,000+ financial texts (earnings calls, analyst reports, market news). Fetches headlines from Indian RSS feeds (Economic Times, Business Standard, LiveMint) → yFinance news → Google News RSS as fallback. Scores headlines in real-time: −1.0 (very negative) to +1.0 (very positive).' },
+    { heading: '2. Auto-refresh & caching', text: 'Page auto-refreshes every 3 minutes (FinBERT inference takes ~15-20s per batch, so shorter intervals are wasteful). TTL cache = 15 minutes server-side — clicking "Force Refresh" bypasses cache and re-fetches all feeds. Session trend chart stores up to 48 data points in localStorage (~2.4 hours of mood history across reloads).' },
+    { heading: '3. How FinBERT scores work', text: 'Input: a raw headline string. Output: [P(positive), P(negative), P(neutral)] — three probabilities summing to 100%. Score = P(positive) − P(negative). Range: −1.0 to +1.0. Why FinBERT and not general NLP? "Markets turn bearish" = Negative in finance, Neutral in general text. "Profit booking seen" = Neutral in finance, Positive elsewhere. Domain matters.' },
+    { heading: '4. Portfolio Impact tab — weight formula', text: 'adjusted_weight = base_weight × (1 + score × 2.0), then all weights normalized to sum 100%. Sensitivity = 2.0. Example: HDFC Bank base = 2.13%, score = +0.30 → adjusted = 2.13 × 1.60 = 3.41% (+1.28% overweight). Negative score → underweight. Stocks with no specific news inherit their sector\'s average score.' },
+    { heading: '5. Where does it fit in Smart Portfolio?', text: 'Sentiment contributes 40% of the Smart Portfolio signal: RL momentum weights (40%) + Sentiment-adjusted weights (40%) + Federated Learning sector weights (20%) → SLSQP Max Sharpe optimization. A "Bullish" market (avg score >0.08) → positive-news stocks overweight. "Bearish" → negative-news stocks trimmed automatically.' },
+    { heading: '6. Sectors tab & Market Mood', text: 'Market Mood = "Bullish" (avg >0.08), "Bearish" (avg <−0.08), "Neutral" (between). Sector tab aggregates all headlines per sector — identifies which sectors have news momentum right now. Score buckets: Very Negative (<−0.30), Negative, Neutral, Positive, Very Positive (>+0.30). High-Impact Alerts = any score beyond ±0.3.' },
   ],
 };
 
@@ -54,7 +59,7 @@ const METRIC_DETAILS: Record<string, { what: string; why: string; how: string; g
   'Headlines Analyzed': {
     what: 'Total number of real financial news headlines fetched and analyzed by FinBERT.',
     why: 'More headlines = more robust sentiment signal. A single headline can be misleading; aggregating many gives a clearer picture.',
-    how: 'Google News RSS fetched for 20 key stocks + 2 market-wide queries. Each headline passed through FinBERT for sentiment scoring.',
+    how: 'Indian RSS feeds (ET, BusinessStandard, LiveMint) as primary source, yFinance and Google News as fallbacks. Each headline passed through FinBERT for sentiment scoring.',
     good: '50-100 headlines is ideal for NIFTY 50 coverage. <20 = too few for reliable sector-level signals.',
   },
   'Market Mood': {
@@ -239,7 +244,7 @@ function NewsCard({ item, index, isNew }: { item: NewsItem; index: number; isNew
               <div className="flex items-center justify-between bg-bg-card rounded-lg px-3 py-2">
                 <span className="text-xs text-text-muted">Net Sentiment Score</span>
                 <span className="font-mono font-bold text-sm" style={{ color: LABEL_COLOR[label] }}>
-                  {item.score > 0 ? '+' : ''}{item.score.toFixed(4)}
+                  {item.score > 0 ? '+' : ''}{safeNum(item.score).toFixed(4)}
                 </span>
               </div>
 
@@ -365,7 +370,7 @@ export default function Sentiment() {
       setResult(res);
       const label = res.label ?? 'neutral';
       const icon = label === 'positive' ? '📈' : label === 'negative' ? '📉' : '➖';
-      toast.info(`${icon} FinBERT: ${label} (score ${res.score.toFixed(3)})`);
+      toast.info(`${icon} FinBERT: ${label} (score ${safeNum(res.score).toFixed(3)})`);
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Sentiment analysis failed — is the backend running?';
       setError(msg);
@@ -383,8 +388,8 @@ export default function Sentiment() {
         .slice(0, 8)
     : [];
 
-  // Derived data
-  const topMover = newsData?.portfolio_impact[0];
+  // Derived data — guard against empty array (not just undefined)
+  const topMover = newsData?.portfolio_impact?.length ? newsData.portfolio_impact[0] : undefined;
   const moodValue = newsData ? (newsData.market_mood === 'Bullish' ? 1 : newsData.market_mood === 'Bearish' ? -1 : 0) : 0;
 
   // Score distribution for pie chart
@@ -410,7 +415,7 @@ export default function Sentiment() {
         <div className="flex items-center gap-3">
           <PageHeader
             title="Sentiment Monitor"
-            subtitle="FinBERT NLP — real-time news sentiment from Google News"
+            subtitle={`FinBERT NLP — Indian RSS feeds + Google News · contributes 40% to Smart Portfolio`}
             icon={<MessageSquare size={24} />}
           />
           {/* LIVE indicator */}
@@ -492,6 +497,34 @@ export default function Sentiment() {
         </>
       )}
 
+      {/* Smart Portfolio Integration Callout */}
+      <div className="mb-6 rounded-xl border border-primary/20 bg-primary/4 px-4 py-3">
+        <div className="flex items-start gap-3">
+          <Briefcase size={16} className="text-primary shrink-0 mt-0.5" />
+          <div className="flex-1">
+            <p className="text-xs font-bold text-primary uppercase tracking-wide mb-1">Smart Portfolio Integration — Sentiment = 40%</p>
+            <div className="grid grid-cols-3 gap-2 text-[11px] mb-2">
+              <div className="rounded-lg border border-border-light bg-white px-2.5 py-1.5 text-center">
+                <p className="text-text-muted">RL Agents</p>
+                <p className="font-bold text-text">× 40%</p>
+              </div>
+              <div className="rounded-lg border-2 border-primary/30 bg-primary/6 px-2.5 py-1.5 text-center">
+                <p className="text-primary font-semibold">Sentiment</p>
+                <p className="font-bold text-primary">× 40% ← you are here</p>
+              </div>
+              <div className="rounded-lg border border-border-light bg-white px-2.5 py-1.5 text-center">
+                <p className="text-text-muted">Federated</p>
+                <p className="font-bold text-text">× 20%</p>
+              </div>
+            </div>
+            <p className="text-[11px] text-text-secondary">
+              Combined weights → SLSQP Max Sharpe optimization → <span className="font-semibold text-text">Final Smart Portfolio</span>.
+              Positive market mood boosts high-sentiment stocks; bearish mood trims them. Formula: <span className="font-mono text-[10px]">adj_w = base × (1 + score × 2.0)</span>, normalized.
+            </p>
+          </div>
+        </div>
+      </div>
+
       {/* Manual Analysis */}
       <Card className="mb-6">
         <h2 className="font-display font-bold text-lg text-secondary mb-3">Analyze Custom Text</h2>
@@ -532,20 +565,20 @@ export default function Sentiment() {
                   {result.label === 'positive' ? <TrendingUp size={12} /> : result.label === 'negative' ? <TrendingDown size={12} /> : <Minus size={12} />}
                   <span className="ml-1">{result.label.toUpperCase()}</span>
                 </Badge>
-                <span className="font-mono text-xl font-bold text-text">{result.score.toFixed(4)}</span>
+                <span className="font-mono text-xl font-bold text-text">{safeNum(result.score).toFixed(4)}</span>
               </div>
               <div className="grid grid-cols-3 gap-4 text-sm mb-3">
                 <div className="text-center p-2 rounded-lg bg-white">
                   <p className="text-text-muted text-xs mb-1">Positive</p>
-                  <p className="font-mono font-semibold text-profit">{(result.positive * 100).toFixed(1)}%</p>
+                  <p className="font-mono font-semibold text-profit">{(safeNum(result.positive) * 100).toFixed(1)}%</p>
                 </div>
                 <div className="text-center p-2 rounded-lg bg-white">
                   <p className="text-text-muted text-xs mb-1">Negative</p>
-                  <p className="font-mono font-semibold text-loss">{(result.negative * 100).toFixed(1)}%</p>
+                  <p className="font-mono font-semibold text-loss">{(safeNum(result.negative) * 100).toFixed(1)}%</p>
                 </div>
                 <div className="text-center p-2 rounded-lg bg-white">
                   <p className="text-text-muted text-xs mb-1">Neutral</p>
-                  <p className="font-mono font-semibold text-text-secondary">{(result.neutral * 100).toFixed(1)}%</p>
+                  <p className="font-mono font-semibold text-text-secondary">{(safeNum(result.neutral) * 100).toFixed(1)}%</p>
                 </div>
               </div>
               <ScoreBar score={result.score} />
@@ -697,17 +730,17 @@ export default function Sentiment() {
                             <span className={`font-mono text-xs font-semibold ${
                               h.sentiment_score > 0.05 ? 'text-profit' : h.sentiment_score < -0.05 ? 'text-loss' : 'text-text-muted'
                             }`}>
-                              {h.sentiment_score > 0 ? '+' : ''}{h.sentiment_score.toFixed(3)}
+                              {h.sentiment_score > 0 ? '+' : ''}{safeNum(h.sentiment_score).toFixed(3)}
                             </span>
                           </td>
-                          <td className="py-2 text-right font-mono text-text-muted">{h.base_weight.toFixed(1)}%</td>
-                          <td className="py-2 text-right font-mono font-semibold">{h.adjusted_weight.toFixed(2)}%</td>
+                          <td className="py-2 text-right font-mono text-text-muted">{safeNum(h.base_weight).toFixed(1)}%</td>
+                          <td className="py-2 text-right font-mono font-semibold">{safeNum(h.adjusted_weight).toFixed(2)}%</td>
                           <td className="py-2 text-right">
                             <span className={`inline-flex items-center gap-0.5 font-mono text-xs font-semibold ${
                               h.weight_change > 0 ? 'text-profit' : h.weight_change < 0 ? 'text-loss' : 'text-text-muted'
                             }`}>
                               {h.weight_change > 0 ? <ArrowUpRight size={10} /> : h.weight_change < 0 ? <ArrowDownRight size={10} /> : null}
-                              {h.weight_change > 0 ? '+' : ''}{h.weight_change.toFixed(2)}%
+                              {h.weight_change > 0 ? '+' : ''}{safeNum(h.weight_change).toFixed(2)}%
                             </span>
                           </td>
                         </motion.tr>
@@ -763,7 +796,7 @@ export default function Sentiment() {
                           <span className={`font-mono text-sm font-bold ${
                             s.avg_score > 0.05 ? 'text-profit' : s.avg_score < -0.05 ? 'text-loss' : 'text-text-muted'
                           }`}>
-                            {s.avg_score > 0 ? '+' : ''}{s.avg_score.toFixed(4)}
+                            {s.avg_score > 0 ? '+' : ''}{safeNum(s.avg_score).toFixed(4)}
                           </span>
                         </div>
                         <div className="flex gap-2">
@@ -887,15 +920,16 @@ export default function Sentiment() {
 
           {/* How Sentiment Affects Portfolio */}
           <Card>
-            <h2 className="font-display font-bold text-lg text-secondary mb-3">How Sentiment Adjusts Portfolio</h2>
-            <div className="space-y-4 text-sm">
+            <h2 className="font-display font-bold text-lg text-secondary mb-1">How Sentiment Feeds Smart Portfolio</h2>
+            <p className="text-xs text-text-muted mb-3">These sentiment-adjusted weights are blended as 40% of the Smart Portfolio optimization.</p>
+            <div className="space-y-3 text-sm">
               <div className="p-3 rounded-xl bg-profit-light/50 border border-profit/20">
                 <div className="flex items-center gap-2 mb-1">
                   <TrendingUp size={14} className="text-profit" />
                   <span className="font-semibold text-profit">Positive Sentiment → Overweight</span>
                 </div>
                 <p className="text-xs text-text-secondary">
-                  Stocks with positive news get higher allocation. Formula: weight × (1 + score × 2.0). A stock with +0.3 sentiment gets ~60% more weight.
+                  <span className="font-mono">adj_w = base × (1 + score × 2.0)</span>. A stock with +0.3 sentiment gets ~60% more weight than baseline.
                 </p>
               </div>
               <div className="p-3 rounded-xl bg-loss-light/50 border border-loss/20">
@@ -904,26 +938,25 @@ export default function Sentiment() {
                   <span className="font-semibold text-loss">Negative Sentiment → Underweight</span>
                 </div>
                 <p className="text-xs text-text-secondary">
-                  Stocks with negative news get lower allocation. A stock with -0.3 sentiment gets ~40% less weight. This acts as risk management.
+                  A stock with -0.3 sentiment gets ~40% less weight. Acts as news-driven risk management.
                 </p>
               </div>
               <div className="p-3 rounded-xl bg-amber-50 border border-amber-200/50">
                 <div className="flex items-center gap-2 mb-1">
                   <Minus size={14} className="text-amber-600" />
-                  <span className="font-semibold text-amber-700">Neutral → No Change</span>
+                  <span className="font-semibold text-amber-700">No News → Inherits Sector Average</span>
                 </div>
                 <p className="text-xs text-text-secondary">
-                  Stocks with neutral news keep their equal-weight baseline. Most stocks fall here — only strong signals move weights significantly.
+                  Stocks without specific news inherit their sector's average sentiment. If Banking sector is +0.15, unmentioned banking stocks get that as their score.
                 </p>
               </div>
-              <div className="p-3 rounded-xl bg-bg-card border border-border-light">
-                <div className="flex items-center gap-2 mb-1">
-                  <PieChart size={14} className="text-text-secondary" />
-                  <span className="font-semibold text-text-secondary">No News → Sector Average</span>
-                </div>
-                <p className="text-xs text-text-secondary">
-                  Stocks without specific news use their sector's average sentiment. If Banking sector is +0.15, all banking stocks without news inherit that.
-                </p>
+              <div className="p-3 rounded-xl bg-bg-card border border-border-light font-mono text-[10px] leading-relaxed">
+                <p className="text-text-muted font-sans text-xs font-semibold mb-1.5">Smart Portfolio formula (Portfolio tab)</p>
+                <p><span className="text-text-secondary">smart_weights =</span></p>
+                <p className="pl-3"><span className="text-primary">RL weights</span> × 0.40</p>
+                <p className="pl-3">+ <span className="text-[#16A34A] font-bold">Sentiment weights ← this tab</span> × 0.40</p>
+                <p className="pl-3">+ <span className="text-amber-600">FL sector weights</span> × 0.20</p>
+                <p className="pl-0 mt-1 text-text-muted">→ SLSQP Max Sharpe → Final weights</p>
               </div>
             </div>
           </Card>

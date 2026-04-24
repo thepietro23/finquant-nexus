@@ -19,6 +19,26 @@ from src.utils.logger import get_logger
 logger = get_logger('stress')
 
 
+def _nearest_pd(A: np.ndarray, min_eigenval: float = 1e-6) -> np.ndarray:
+    """Return nearest positive-definite matrix to A via eigenvalue clipping.
+
+    Adding a small diagonal (1e-5) often isn't enough when correlation_boost
+    pushes eigenvalues deeply negative. Clipping eigenvalues is always sufficient.
+    """
+    B = (A + A.T) / 2                          # symmetrize to kill FP drift
+    eigvals, eigvecs = np.linalg.eigh(B)       # eigh assumes symmetric — faster+stable
+    eigvals = np.maximum(eigvals, min_eigenval)
+    return eigvecs @ np.diag(eigvals) @ eigvecs.T
+
+
+def _cholesky_pd(A: np.ndarray) -> np.ndarray:
+    """Cholesky of A, falling back to nearest-PD if not already PD."""
+    try:
+        return np.linalg.cholesky(A)
+    except np.linalg.LinAlgError:
+        return np.linalg.cholesky(_nearest_pd(A))
+
+
 @dataclass
 class StressResult:
     """Standardized stress test result."""
@@ -99,13 +119,7 @@ def monte_carlo_simulation(weights, mean_returns, cov_matrix,
     n_stocks = len(weights)
 
     # Generate correlated random returns
-    # Cholesky decomposition for correlated samples
-    try:
-        L = np.linalg.cholesky(cov_matrix)
-    except np.linalg.LinAlgError:
-        # Not positive definite — add small regularization
-        cov_reg = cov_matrix + np.eye(n_stocks) * 1e-6
-        L = np.linalg.cholesky(cov_reg)
+    L = _cholesky_pd(cov_matrix)
 
     # Simulate paths
     portfolio_total_returns = []
@@ -145,32 +159,60 @@ def monte_carlo_simulation(weights, mean_returns, cov_matrix,
 # Pre-defined crash parameters (daily return shocks)
 CRASH_SCENARIOS = {
     'normal': {
-        'description': 'Normal market conditions',
+        'description': 'Normal market conditions (1 year)',
         'daily_shock_mean': 0.0,
         'daily_shock_std': 0.01,
         'duration_days': 252,
         'correlation_boost': 0.0,
     },
     'crash_2008': {
-        'description': '2008 Global Financial Crisis',
+        'description': '2008 Global Financial Crisis (5 months)',
         'daily_shock_mean': -0.003,
         'daily_shock_std': 0.035,
         'duration_days': 120,
-        'correlation_boost': 0.3,  # Correlations increase in crisis
+        'correlation_boost': 0.3,
     },
     'crash_covid': {
-        'description': 'COVID-19 March 2020 crash',
+        'description': 'COVID-19 March 2020 crash (1 month)',
         'daily_shock_mean': -0.005,
         'daily_shock_std': 0.05,
         'duration_days': 30,
         'correlation_boost': 0.4,
     },
     'flash_crash': {
-        'description': 'Flash crash (rapid intraday)',
+        'description': 'Flash crash — extreme intraday (5 days)',
         'daily_shock_mean': -0.02,
         'daily_shock_std': 0.08,
         'duration_days': 5,
         'correlation_boost': 0.5,
+    },
+    'dot_com_2000': {
+        'description': 'Dot-com bubble burst 2000-2002 (8 months)',
+        'daily_shock_mean': -0.002,
+        'daily_shock_std': 0.028,
+        'duration_days': 180,
+        'correlation_boost': 0.2,
+    },
+    'india_bear_2015': {
+        'description': 'India bear market 2015-16 — China slowdown (6 months)',
+        'daily_shock_mean': -0.0015,
+        'daily_shock_std': 0.022,
+        'duration_days': 150,
+        'correlation_boost': 0.18,
+    },
+    'rate_hike_2022': {
+        'description': 'Fed rate hike cycle 2022 — slow equity bleed (7 months)',
+        'daily_shock_mean': -0.001,
+        'daily_shock_std': 0.018,
+        'duration_days': 180,
+        'correlation_boost': 0.12,
+    },
+    'geopolitical': {
+        'description': 'Geopolitical shock — Russia/Ukraine type event (45 days)',
+        'daily_shock_mean': -0.004,
+        'daily_shock_std': 0.045,
+        'duration_days': 45,
+        'correlation_boost': 0.35,
     },
 }
 
@@ -215,12 +257,8 @@ def simulate_crash_scenario(weights, mean_returns, cov_matrix,
         np.fill_diagonal(corr, 1.0)
         stressed_cov = corr * np.outer(stds * (1 + shock_std * 10), stds * (1 + shock_std * 10))
 
-    # Ensure positive definite
-    try:
-        L = np.linalg.cholesky(stressed_cov)
-    except np.linalg.LinAlgError:
-        stressed_cov += np.eye(n_stocks) * 1e-5
-        L = np.linalg.cholesky(stressed_cov)
+    # Ensure positive definite (correlation boost can push eigenvalues negative)
+    L = _cholesky_pd(stressed_cov)
 
     # Stressed mean returns
     stressed_mean = mean_returns + shock_mean

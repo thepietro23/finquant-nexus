@@ -80,8 +80,8 @@ export default function MetricCard({
       whileHover={{ y: -4, boxShadow: '0 12px 32px rgba(193,95,60,0.14)' }}
       whileTap={onClick ? { scale: 0.97, y: 0 } : {}}
       transition={{ type: 'spring', stiffness: 300, damping: 22 }}
-      className={`bg-white rounded-2xl border p-5 relative overflow-hidden
-        ${active ? 'border-primary border-l-[3px] shadow-[0_10px_30px_rgba(193,95,60,0.12)] bg-[#FFFBF8]' : 'border-border'}
+      className={`bg-white rounded-xl border p-4 relative overflow-hidden shadow-[0_1px_3px_rgba(0,0,0,0.05)]
+        ${active ? 'border-primary shadow-[0_4px_16px_rgba(193,95,60,0.14)] bg-[#FFFBF8] ring-1 ring-primary/20' : 'border-border'}
         ${onClick ? 'cursor-pointer' : ''}`}
     >
       {/* Subtle gradient shine */}
@@ -93,7 +93,7 @@ export default function MetricCard({
       </div>
 
       <div className="flex items-end gap-3 mb-2 relative">
-        <span className="text-3xl font-bold font-mono text-text">
+        <span className="text-2xl font-bold font-mono text-text tracking-tight">
           {prefix}{animated}{suffix}
         </span>
         {change !== undefined && (

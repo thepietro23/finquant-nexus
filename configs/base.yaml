@@ -131,15 +131,15 @@ rl:
     top_k: 3               # average top-3 models by recent Sharpe
 
   # Algorithm-specific portfolio construction strategies (simulation)
-  ppo_momentum_scale: 80     # softmax scale for 60-day momentum signal
+  ppo_momentum_scale: 2.0    # z-score softmax scale — 2σ spread → moderate concentration
   ppo_eq_blend: 0.35         # equal-weight blend fraction (diversification)
-  sac_momentum_scale: 25     # softer scale → more diversified distribution
+  sac_momentum_scale: 1.0    # softer z-score scale → more diversified distribution
   sac_max_position: 0.06     # max 6% per stock (entropy / forced spread)
   td3_reversal_days: 5       # short-term reversal lookback (days)
-  td3_reversal_scale: 60     # scale for negative short-term momentum (reversal)
+  td3_reversal_scale: 2.0    # z-score scale for inverted short-term momentum (reversal)
   a2c_max_position: 0.10     # inverse-vol weighting, max 10% (low-vol focused)
   ddpg_top_k: 10             # concentrate in top-K momentum stocks only
-  ddpg_momentum_scale: 200   # aggressive scale within top-K set
+  ddpg_momentum_scale: 3.0   # aggressive z-score scale within top-K set
 
 # --- GAN ---
 gan:

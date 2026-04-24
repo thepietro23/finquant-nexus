@@ -45,12 +45,12 @@ function getRLBadge(metric: 'sharpe' | 'reward' | 'drawdown', value: number): Me
 const PAGE_INFO = {
   title: 'RL Agent Monitor — What Does This Page Show?',
   sections: [
-    { heading: 'What is this page?', text: 'Compares 5 Deep RL algorithms (PPO, SAC, TD3, A2C, DDPG) + an Ensemble that learns to manage a NIFTY 50 portfolio by trial-and-error on real price data. Each algorithm uses a distinct investment strategy.' },
-    { heading: '5 Algorithms', text: 'PPO: momentum blend with diversification. SAC: soft momentum, forced spread (max 8% per stock). TD3: short-term mean-reversion (bets against recent winners). A2C: inverse-volatility (more weight to stable stocks). DDPG: concentrated top-K momentum only.' },
-    { heading: 'Ensemble strategy', text: 'Ensemble averages all 5 weight vectors, weighted by each algorithm\'s recent Sharpe performance. Algorithms that performed better recently get higher influence — reducing single-model bias.' },
-    { heading: 'Training reward curve', text: 'Shows Sharpe Ratio per episode. An episode = 252 trading days (1 year) of real returns. Upward trend = agent learning better allocation. Each algorithm shows a different convergence pattern.' },
-    { heading: 'Cumulative returns', text: 'Portfolio growth on out-of-sample validation data. Compares all 6 strategies plus equal-weight baseline. Shows real out-of-sample performance — data the agents never trained on.' },
-    { heading: 'Constraints', text: 'Max 20% per stock (diversification), -5% stop loss, -15% circuit breaker, 0.1% transaction cost + 0.05% slippage. These are real Indian market constraints applied to all algorithms.' },
+    { heading: 'What is this page?', text: 'Compares 6 Reinforcement Learning strategies (PPO, SAC, TD3, A2C, DDPG + Ensemble) trained on real NIFTY 50 price data (2015–2021). Each agent learns portfolio weights by trial-and-error — reward = Sharpe Ratio. Training data: 2015–2021 (~70%). Validation (out-of-sample): 2022–2025 (~30%).' },
+    { heading: '5 Base Algorithms', text: 'PPO (Proximal Policy Optimization): moderate momentum + equal-weight blend, max 20% per stock. SAC (Soft Actor-Critic): entropy-regularized, widest diversification, max 6% per stock. TD3 (Twin Delayed DDPG): short-term mean-reversion, bets against recent momentum, max 20%. A2C (Advantage Actor-Critic): inverse-volatility weighting, stable stocks get more, max 10%. DDPG (Deep Deterministic Policy Gradient): concentrated top-K momentum, max 20%.' },
+    { heading: 'Ensemble strategy', text: 'Ensemble averages the weight vectors from all 5 algorithms. This reduces single-model bias and is the most robust allocation — especially during market regime changes (e.g., bull-to-bear transition) when individual strategies may break down. The Ensemble output feeds 40% of the Smart Portfolio signal.' },
+    { heading: 'Training reward curve', text: 'Each episode = one training pass over a 252-day window from the 2015–2021 period. Reward = Sharpe Ratio of the portfolio that episode. Upward trend = agent converging on better risk-adjusted allocations. All 6 strategies run simultaneously for comparison.' },
+    { heading: 'Cumulative returns & validation', text: 'Applied to 2022–2025 validation data the agents never trained on. Compares all 6 strategies vs. equal-weight baseline. This is the key chart for dissertation — shows the AI outperforms passive investing on unseen data.' },
+    { heading: 'Weight evolution & stock contributions', text: 'Weight Evolution shows how each algorithm\'s top-5 stock allocations change episode-by-episode. Stock Contributions table shows each stock\'s portfolio weight × its return — which stocks actually drove performance. Constraints: max position 20% (PPO/TD3/DDPG/Ensemble), 6% (SAC), 10% (A2C); -15% circuit breaker triggers exit.' },
   ],
 };
 
@@ -103,7 +103,11 @@ const ALGO_DESC: Record<AgentType, string> = {
 function getM(data: RLSummaryResponse, algo: AgentType, field: string): number {
   const key = `${ALGO_PREFIX[algo]}_${field}` as keyof RLSummaryResponse
   const v = data[key]
-  return typeof v === 'number' ? v : 0
+  return typeof v === 'number' && isFinite(v) ? v : 0
+}
+
+function safeNum(v: number | null | undefined, fallback = 0): number {
+  return (v == null || !isFinite(v)) ? fallback : v;
 }
 
 export default function RlAgent() {
@@ -153,16 +157,27 @@ export default function RlAgent() {
     a2c: r.a2c_reward, ddpg: r.ddpg_reward, ensemble: r.ensemble_reward,
   }));
   const weightKey = `${ak}_weight` as keyof typeof data.weights[0]
-  const weightData = data.weights.slice(0, 15).map(w => {
-    const v = w[weightKey];
-    return { name: w.ticker, weight: typeof v === 'number' ? v : 0, sector: w.sector };
-  });
+  // Sort by selected algo's weight desc so top-15 reflects the current agent
+  const weightData = [...data.weights]
+    .sort((a, b) => {
+      const av = (a[weightKey] as number) ?? 0;
+      const bv = (b[weightKey] as number) ?? 0;
+      return bv - av;
+    })
+    .slice(0, 15)
+    .map(w => {
+      const v = w[weightKey];
+      return { name: w.ticker, weight: typeof v === 'number' ? v : 0, sector: w.sector };
+    });
 
-  // Sector allocation pie data
-  const sectorPieData = data.sector_allocation.map(s => {
+  // Sector allocation pie data — fall back to all > 0 if nothing reaches 1%
+  const allSectorPie = data.sector_allocation.map(s => {
     const sv = s[`${ak}_weight` as keyof typeof s];
     return { name: s.sector, value: typeof sv === 'number' ? sv : 0, color: SECTOR_COLORS[s.sector] || '#9CA3AF' };
-  }).filter(d => d.value > 1);
+  }).filter(d => d.value > 0);
+  const sectorPieData = allSectorPie.filter(d => d.value >= 1).length > 0
+    ? allSectorPie.filter(d => d.value >= 1)
+    : allSectorPie;
 
   // All-algo comparison rows
   const allAlgos: AgentType[] = ['PPO', 'SAC', 'TD3', 'A2C', 'DDPG', 'Ensemble']
@@ -175,6 +190,10 @@ export default function RlAgent() {
     annual_vol:    Math.min(...allAlgos.map(a => getM(data, a, 'annual_vol'))),
     max_drawdown:  Math.max(...allAlgos.map(a => getM(data, a, 'max_drawdown'))), // closest to 0 = highest
   }
+  // Range-based sharpe bar so it works even when all algos have negative sharpe
+  const allSharpeVals = allAlgos.map(a => getM(data, a, 'sharpe'));
+  const minSharpeVal = Math.min(...allSharpeVals);
+  const sharpeRange = colBest.sharpe - minSharpeVal;
 
   // Data-driven "Recommended" badge: composite score = Sharpe + Sortino*0.5 + annRet*0.02 - |maxDD|*2
   const recommendedAlgo = allAlgos.reduce<AgentType>((best, a) => {
@@ -192,7 +211,7 @@ export default function RlAgent() {
       <div className="flex items-center justify-between">
         <PageHeader
           title="RL Agent Monitor"
-          subtitle={`5 algorithms + Ensemble on real NIFTY 50 — ${data.ppo_episodes} episodes — out-of-sample validation`}
+          subtitle={`6 strategies (PPO/SAC/TD3/A2C/DDPG + Ensemble) — ${data.ppo_episodes} episodes — out-of-sample validation`}
           icon={<Brain size={24} />}
         />
         <PageInfoPanel title={PAGE_INFO.title} sections={PAGE_INFO.sections} />
@@ -275,7 +294,9 @@ export default function RlAgent() {
                 const annRet = getM(data, a, 'annual_return')
                 const annVol = getM(data, a, 'annual_vol')
                 const dd = getM(data, a, 'max_drawdown')
-                const barPct = colBest.sharpe > 0 ? Math.max(0, (sharpe / colBest.sharpe)) * 100 : 0
+                const barPct = sharpeRange > 0.0001
+                  ? Math.max(5, ((sharpe - minSharpeVal) / sharpeRange) * 100)
+                  : 50
                 return (
                   <motion.tr
                     key={a}
@@ -294,25 +315,25 @@ export default function RlAgent() {
                       {a}
                       {isRecommended && <Badge variant="profit">Recommended</Badge>}
                     </td>
-                    {/* Sharpe with fill bar */}
+                    {/* Sharpe with fill bar — range-based so negative sharpes still show relative width */}
                     <td className={`py-2.5 text-right font-mono relative pr-3 ${sharpe === colBest.sharpe ? 'text-profit font-bold' : ''}`}>
                       <div
                         className="absolute inset-y-1 right-0 rounded-l opacity-[0.12]"
                         style={{ width: `${barPct}%`, background: ALGO_COLORS[a] }}
                       />
-                      <span className="relative z-10">{sharpe.toFixed(4)}</span>
+                      <span className="relative z-10">{safeNum(sharpe).toFixed(4)}</span>
                     </td>
                     <td className={`py-2.5 text-right font-mono ${sortino === colBest.sortino ? 'text-profit font-bold' : ''}`}>
-                      {sortino.toFixed(4)}
+                      {safeNum(sortino).toFixed(4)}
                     </td>
                     <td className={`py-2.5 text-right font-mono ${annRet === colBest.annual_return ? 'text-profit font-bold' : annRet >= 0 ? 'text-profit' : 'text-loss'}`}>
-                      {annRet >= 0 ? '+' : ''}{annRet.toFixed(2)}%
+                      {safeNum(annRet) >= 0 ? '+' : ''}{safeNum(annRet).toFixed(2)}%
                     </td>
                     <td className={`py-2.5 text-right font-mono ${annVol === colBest.annual_vol ? 'text-profit font-bold' : 'text-text-secondary'}`}>
-                      {annVol.toFixed(2)}%
+                      {safeNum(annVol).toFixed(2)}%
                     </td>
                     <td className={`py-2.5 text-right font-mono ${dd === colBest.max_drawdown ? 'text-profit font-bold' : 'text-loss'}`}>
-                      {(dd * 100).toFixed(2)}%
+                      {(safeNum(dd) * 100).toFixed(2)}%
                     </td>
                   </motion.tr>
                 )
@@ -358,8 +379,11 @@ export default function RlAgent() {
           {activeTab === 'rewards' && (
             <motion.div key="rewards" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}>
               <p className="text-xs text-text-secondary mb-3">
-                Sharpe Ratio per training episode. Upward trend = agent learning better risk-adjusted allocation from real 2015-2021 returns.
+                Sharpe Ratio per training episode. Upward trend = agent learning better risk-adjusted allocation from real historical returns.
               </p>
+              {rewardData.length === 0 ? (
+                <p className="text-center text-text-muted py-12 text-sm">No training data available</p>
+              ) : (
               <ResponsiveContainer width="100%" height={340} minHeight={1}>
                 <AreaChart data={rewardData} margin={{ top: 10, right: 10, bottom: 0, left: 10 }}>
                   <defs>
@@ -383,6 +407,7 @@ export default function RlAgent() {
                   <Area type="monotone" dataKey="ensemble" name="Ensemble" stroke="#16A34A" strokeWidth={3} fill="none" dot={false} isAnimationActive={false} />
                 </AreaChart>
               </ResponsiveContainer>
+              )}
             </motion.div>
           )}
 
@@ -390,8 +415,11 @@ export default function RlAgent() {
           {activeTab === 'cumulative' && (
             <motion.div key="cumulative" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}>
               <p className="text-xs text-text-secondary mb-3">
-                Portfolio growth on out-of-sample validation data. All 6 strategies vs equal-weight baseline — real returns the agents never trained on.
+                Portfolio growth on out-of-sample validation data (~30% of all data). All 6 strategies vs equal-weight baseline — real returns the agents never trained on.
               </p>
+              {data.cumulative_returns.length === 0 ? (
+                <p className="text-center text-text-muted py-12 text-sm">No validation data available</p>
+              ) : (
               <ResponsiveContainer width="100%" height={340} minHeight={1}>
                 <AreaChart data={data.cumulative_returns} margin={{ top: 10, right: 10, bottom: 0, left: 10 }}>
                   <CartesianGrid stroke="#F3F4F6" strokeDasharray="3 3" vertical={false} />
@@ -409,6 +437,7 @@ export default function RlAgent() {
                   <Line type="monotone" dataKey="equal_weight" name="Equal Weight" stroke="#9CA3AF" strokeWidth={1.5} strokeDasharray="5 5" dot={false} isAnimationActive={false} />
                 </AreaChart>
               </ResponsiveContainer>
+              )}
               {(() => {
                 const last = data.cumulative_returns[data.cumulative_returns.length - 1]
                 const cols = [
@@ -562,17 +591,28 @@ export default function RlAgent() {
 
       {/* Constraints Panel */}
       <Card>
-        <h2 className="font-display font-bold text-lg text-secondary mb-4">Risk Constraints</h2>
+        <h2 className="font-display font-bold text-lg text-secondary mb-4">Risk Constraints — {agent}</h2>
         <p className="text-xs text-text-secondary mb-4">
-          Real-world constraints applied during training. These enforce diversification, limit losses, and account for Indian market costs.
+          Real-world constraints applied during training. Max position varies by algorithm: PPO/TD3/Ensemble=20%, A2C=10%, SAC=6% (widest diversification), DDPG=top-{safeNum(data.constraints.ddpg_top_k as number, 10).toFixed(0)} stocks only.
         </p>
+        {(() => {
+          const algoMaxPos = (
+            agent === 'SAC' ? safeNum(data.constraints.sac_max_position as number, 0.06)
+            : agent === 'A2C' ? safeNum(data.constraints.a2c_max_position as number, 0.10)
+            : safeNum(data.constraints.max_position, 0.20)
+          ) * 100;
+          const algoMaxPosLabel = agent === 'SAC' ? 'SAC: 6% spread'
+            : agent === 'A2C' ? 'A2C: 10% max'
+            : agent === 'DDPG' ? `Top-${safeNum(data.constraints.ddpg_top_k as number, 10).toFixed(0)} only`
+            : 'default: 20%';
+          return (
         <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
           {[
-            { label: 'Max Position', value: `${data.constraints.max_position * 100}%`, desc: 'No stock can exceed this weight', icon: <Shield size={16} />, color: '#C15F3C' },
-            { label: 'Stop Loss', value: `${data.constraints.stop_loss * 100}%`, desc: 'Per-stock loss limit (force exit)', icon: <TrendingDown size={16} />, color: '#DC2626' },
-            { label: 'Circuit Breaker', value: `${data.constraints.max_drawdown * 100}%`, desc: 'Portfolio-wide drawdown limit', icon: <AlertTriangle size={16} />, color: '#F59E0B' },
-            { label: 'Transaction Cost', value: `${data.constraints.transaction_cost * 100}%`, desc: 'Brokerage + STT per trade', icon: <BarChart3 size={16} />, color: '#6366F1' },
-            { label: 'Slippage', value: `${data.constraints.slippage * 100}%`, desc: 'Market impact cost per trade', icon: <Zap size={16} />, color: '#0D9488' },
+            { label: 'Max Position', value: `${algoMaxPos.toFixed(0)}%`, desc: algoMaxPosLabel, icon: <Shield size={16} />, color: '#C15F3C' },
+            { label: 'Stop Loss', value: `${safeNum(data.constraints.stop_loss, -0.05) * 100}%`, desc: 'Per-stock loss limit (force exit)', icon: <TrendingDown size={16} />, color: '#DC2626' },
+            { label: 'Circuit Breaker', value: `${safeNum(data.constraints.max_drawdown, -0.15) * 100}%`, desc: 'Portfolio-wide drawdown limit', icon: <AlertTriangle size={16} />, color: '#F59E0B' },
+            { label: 'Transaction Cost', value: `${safeNum(data.constraints.transaction_cost, 0.001) * 100}%`, desc: 'Brokerage + STT per trade', icon: <BarChart3 size={16} />, color: '#6366F1' },
+            { label: 'Slippage', value: `${safeNum(data.constraints.slippage, 0.0005) * 100}%`, desc: 'Market impact cost per trade', icon: <Zap size={16} />, color: '#0D9488' },
           ].map((c, i) => (
             <motion.div key={c.label}
               initial={{ opacity: 0, y: 20 }}
@@ -589,10 +629,12 @@ export default function RlAgent() {
             </motion.div>
           ))}
         </div>
+          );
+        })()}
       </Card>
 
       <p className="text-center text-xs text-text-muted mt-6 mb-2">
-        All data computed from real NIFTY 50 stock returns — Train: 2015-2021, Validation: 2022-2023
+        All data computed from real NIFTY 50 stock returns — Train: first 70% of data, Validation: remaining 30%
       </p>
     </div>
   );

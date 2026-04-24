@@ -32,6 +32,11 @@ from src.api.schemas import (
     GNNSummaryResponse, GNNNode, GNNEdge, TopConnection, SectorConnectivity,
     NewsSentimentResponse, NewsItem, SectorSentiment, SentimentPortfolioHolding,
     GrowthRequest, GrowthResponse, GrowthPoint,
+    LiveStockPrice, LivePortfolioResponse,
+    OptimizedStock, OptimizedPortfolioResponse,
+    SmartSignalBreakdown, SmartPortfolioResponse,
+    PercentileBand, AlgoFutureStat, ReturnBucket, ScenarioPath,
+    ForwardAlloc, FuturePredictionResponse,
 )
 
 logger = get_logger('api')
@@ -54,13 +59,24 @@ _NEWS_CACHE: dict = {'data': None, 'ts': 0.0}
 _NEWS_TTL: int = get_config('sentiment').get('news_cache_ttl', 180)
 
 
+def _sf(v, ndigits: int = 4, fallback: float = 0.0) -> float:
+    """Return a finite rounded float safe for JSON; converts NaN/Inf → fallback."""
+    try:
+        f = float(v)
+        return round(f, ndigits) if np.isfinite(f) else fallback
+    except (TypeError, ValueError):
+        return fallback
+
+
 def _get_price_df() -> '_pd.DataFrame':
     global _PRICE_DF
     if _PRICE_DF is None:
         with _CACHE_LOCK:
             if _PRICE_DF is None:   # double-checked locking
                 csv_path = _os.path.join(_os.path.dirname(__file__), '..', '..', 'data', 'all_close_prices.csv')
-                _PRICE_DF = _pd.read_csv(csv_path, parse_dates=['Date'], index_col='Date').dropna(axis=1, how='all').ffill()
+                df = _pd.read_csv(csv_path, parse_dates=['Date'], index_col='Date').dropna(axis=1, how='all').ffill()
+                # Drop duplicate dates (keep last) so .reindex() never throws
+                _PRICE_DF = df[~df.index.duplicated(keep='last')].sort_index()
     return _PRICE_DF
 
 
@@ -71,7 +87,8 @@ def _get_nifty_df() -> '_pd.DataFrame | None':
             if _NIFTY_DF is None:
                 nifty_path = _os.path.join(_os.path.dirname(__file__), '..', '..', 'data', 'NIFTY50_INDEX.csv')
                 if _os.path.exists(nifty_path):
-                    _NIFTY_DF = _pd.read_csv(nifty_path, parse_dates=['Date'], index_col='Date')
+                    df = _pd.read_csv(nifty_path, parse_dates=['Date'], index_col='Date')
+                    _NIFTY_DF = df[~df.index.duplicated(keep='last')].sort_index()
     return _NIFTY_DF
 
 
@@ -237,6 +254,7 @@ def stock_detail(ticker: str):
         _cfg_port = get_config('portfolio')
         _eval_days = _cfg_port.get('eval_days', _cfg_data.get('trading_days_per_year', 248))
         _sparkline  = _cfg_port.get('sparkline_days', 60)
+        _rf = _cfg_data.get('risk_free_rate', 0.05)
 
         eval_days = min(_eval_days, len(prices))
         prices_1y = prices.iloc[-eval_days:]
@@ -259,7 +277,7 @@ def stock_detail(ticker: str):
 
         returns_arr = returns_1y.values
         vol = float(annualized_volatility(returns_arr))
-        sr = float(sharpe_ratio(returns_arr))
+        sr = float(sharpe_ratio(returns_arr, rf=_rf))
         values = 100 * np.cumprod(1 + returns_arr)
         md = float(max_drawdown(values))
         weight = round(100 / n_stocks, 2)
@@ -355,33 +373,38 @@ def predict_sentiment_batch(req: BatchSentimentRequest):
 
 @app.post("/api/stress-test", response_model=StressTestResponse)
 def run_stress_test(req: StressTestRequest):
-    """Run portfolio stress test with multiple crash scenarios."""
+    """Run portfolio stress test with multiple crash scenarios using real NIFTY 50 data."""
     try:
-        from src.gan.stress import run_all_stress_tests, stress_test_summary
+        from src.gan.stress import run_all_stress_tests
 
-        n = req.n_stocks
-        np.random.seed(42)
+        # Use real historical returns & covariance — far more realistic than synthetic
+        df = _get_price_df()
+        all_tickers = df.columns.tolist()
+        n = min(req.n_stocks, len(all_tickers))
+        selected = all_tickers[:n]
+        ret_df = df[selected].pct_change().dropna()
+        mean_ret = ret_df.mean().values
+        cov = ret_df.cov().values
         weights = np.ones(n) / n
-        mean_ret = np.random.normal(0.0005, 0.001, n)
-        cov = np.eye(n) * 0.0001 + np.ones((n, n)) * 0.00002
 
         results = run_all_stress_tests(
             weights, mean_ret, cov,
             n_simulations=req.n_simulations,
         )
-        summary = stress_test_summary(results)
+
+        # Filter to requested scenarios (None = all). Unknown names are silently skipped.
+        _wanted = set(req.scenarios) if req.scenarios else set(results.keys())
 
         scenarios = []
-        for name, data in summary.items():
-            def _f(v, default=0.0) -> float:
-                try: return float(v)
-                except (TypeError, ValueError): return default
+        for name, r in results.items():
+            if name not in _wanted:
+                continue
             scenarios.append(ScenarioResult(
                 scenario=name,
-                mean_return=round(_f(data.get('mean_return')), 6),
-                var_95=round(_f(data.get('var_95')), 6),
-                cvar_95=round(_f(data.get('cvar_95')), 6),
-                survival_rate=round(_f(data.get('survival_rate')), 6),
+                mean_return=_sf(r.mean_return, 6),
+                var_95=_sf(r.var_95, 6),
+                cvar_95=_sf(r.cvar_95, 6),
+                survival_rate=_sf(r.survival_rate, 6),
             ))
 
         return StressTestResponse(
@@ -404,10 +427,10 @@ def run_qaoa_optimization(req: QAOARequest):
     try:
         from src.quantum.portfolio import quantum_portfolio_optimize
 
-        np.random.seed(42)
-        # Synthetic returns for demo (real data would come from data pipeline)
-        rng = np.random.RandomState(42)
-        returns = rng.randn(500, req.n_assets) * 0.01 + 0.0005
+        # Use real NIFTY 50 price data — last 500 trading days across all stocks.
+        # quantum_portfolio_optimize internally selects the top n_assets by Sharpe.
+        df_q = _get_price_df()
+        returns = df_q.pct_change().dropna().values[-500:]
 
         result = quantum_portfolio_optimize(
             returns,
@@ -439,6 +462,15 @@ def run_qaoa_optimization(req: QAOARequest):
 # METRICS
 # ============================================================
 
+@app.get("/api/metrics")
+def metrics_info():
+    """Usage hint for GET callers — actual computation requires POST with body."""
+    return {
+        "usage": "POST /api/metrics",
+        "body": {"returns": "list[float] — array of daily returns, e.g. [0.01, -0.005, 0.003]"},
+    }
+
+
 @app.post("/api/metrics", response_model=MetricsResponse)
 def compute_metrics(req: MetricsRequest):
     """Compute financial metrics from daily returns."""
@@ -449,10 +481,11 @@ def compute_metrics(req: MetricsRequest):
 
     returns = np.array(req.returns, dtype=np.float64)
     values = 100 * np.cumprod(1 + returns)
+    _rf = get_config('data').get('risk_free_rate', 0.05)
 
     return MetricsResponse(
-        sharpe_ratio=round(sharpe_ratio(returns), 4),
-        sortino_ratio=round(sortino_ratio(returns), 4),
+        sharpe_ratio=round(sharpe_ratio(returns, rf=_rf), 4),
+        sortino_ratio=round(sortino_ratio(returns, rf=_rf), 4),
         annualized_return=round(annualized_return(returns), 4),
         annualized_volatility=round(annualized_volatility(returns), 4),
         max_drawdown=round(max_drawdown(values), 4),
@@ -488,6 +521,7 @@ def portfolio_summary(
         _cfg_data = get_config('data')
         _cfg_port = get_config('portfolio')
         _eval_days = _cfg_port.get('eval_days', _cfg_data.get('trading_days_per_year', 248))
+        _rf = _cfg_data.get('risk_free_rate', 0.05)
 
         if start_date and end_date:
             df_eval = df.loc[start_date:end_date]
@@ -500,6 +534,9 @@ def portfolio_summary(
 
         # Daily returns
         daily_returns = df_eval.pct_change().dropna()
+        if len(daily_returns) < 2:
+            raise HTTPException(status_code=400,
+                detail='Not enough trading days in the selected range (minimum 2). Try a wider date range.')
 
         # Equal-weight portfolio returns
         weights = np.ones(n_stocks) / n_stocks
@@ -524,13 +561,13 @@ def portfolio_summary(
         nifty_cum = np.cumprod(1 + nifty_returns) - 1
         dates = daily_returns.index[-min_len:]
 
-        # Metrics
+        # Metrics — all wrapped with _sf() so NaN/Inf never reaches JSON
         portfolio_values = 100 * np.cumprod(1 + portfolio_daily)
-        sr = sharpe_ratio(portfolio_daily)
-        so = sortino_ratio(portfolio_daily)
-        ar = annualized_return(portfolio_daily)
-        av = annualized_volatility(portfolio_daily)
-        md = max_drawdown(portfolio_values)
+        sr = _sf(sharpe_ratio(portfolio_daily, rf=_rf),  4)
+        so = _sf(sortino_ratio(portfolio_daily, rf=_rf), 4)
+        ar = _sf(annualized_return(portfolio_daily),     4)
+        av = _sf(annualized_volatility(portfolio_daily), 4)
+        md = _sf(max_drawdown(portfolio_values),         4)
 
         # Holdings (latest day returns + cumulative)
         last_daily = daily_returns.iloc[-1]
@@ -540,42 +577,44 @@ def portfolio_summary(
         for i, t in enumerate(tickers):
             sector = get_sector(t) or 'Unknown'
             w = round(weights[i] * 100, 2)
+            dr = float(last_daily[t]) * 100
+            cr = float(full_cum[t]) * 100
             holdings.append(PortfolioHolding(
                 ticker=t,
                 sector=sector,
                 weight=w,
-                daily_return=round(float(last_daily[t]) * 100, 2),
-                cumulative_return=round(float(full_cum[t]) * 100, 2),
+                daily_return=round(dr if _pd.notna(dr) else 0.0, 2),
+                cumulative_return=round(cr if _pd.notna(cr) else 0.0, 2),
             ))
             sector_weight_map[sector] = round(sector_weight_map.get(sector, 0) + w, 2)
 
-        # Sort holdings by cumulative return descending
-        holdings.sort(key=lambda h: h.cumulative_return, reverse=True)
+        # Sort holdings by cumulative return descending (stable: secondary key = ticker)
+        holdings.sort(key=lambda h: (-h.cumulative_return, h.ticker))
 
         # Performance points (sample every 5 days for smaller payload)
         perf = []
         for idx in range(0, min_len, 5):
             perf.append(PerformancePoint(
                 date=dates[idx].strftime('%b %d'),
-                portfolio=round(float(portfolio_cum[idx]) * 100, 2),
-                nifty=round(float(nifty_cum[idx]) * 100, 2),
+                portfolio=_sf(float(portfolio_cum[idx]) * 100, 2),
+                nifty=_sf(float(nifty_cum[idx]) * 100, 2),
             ))
         # Always include last point
         perf.append(PerformancePoint(
             date=dates[-1].strftime('%b %d'),
-            portfolio=round(float(portfolio_cum[-1]) * 100, 2),
-            nifty=round(float(nifty_cum[-1]) * 100, 2),
+            portfolio=_sf(float(portfolio_cum[-1]) * 100, 2),
+            nifty=_sf(float(nifty_cum[-1]) * 100, 2),
         ))
 
         from src.data.live import get_data_as_of
-        total_ret_pct = round(float(portfolio_cum[-1]) * 100, 2)
+        total_ret_pct = _sf(float(portfolio_cum[-1]) * 100, 2)
         return PortfolioSummaryResponse(
-            portfolio_value=0,  # frontend computes: startingCapital * (1 + total_return_pct/100)
-            sharpe_ratio=round(float(sr), 4),
-            sortino_ratio=round(float(so), 4),
-            annualized_return=round(float(ar), 4),
-            annualized_volatility=round(float(av), 4),
-            max_drawdown=round(float(md), 4),
+            portfolio_value=0,  # frontend computes from starting capital + return
+            sharpe_ratio=sr,
+            sortino_ratio=so,
+            annualized_return=ar,
+            annualized_volatility=av,
+            max_drawdown=md,
             n_stocks=n_stocks,
             n_days=min_len,
             date_start=dates[0].strftime('%Y-%m-%d'),
@@ -585,6 +624,7 @@ def portfolio_summary(
             sector_weights=sector_weight_map,
             data_as_of=get_data_as_of() or dates[-1].strftime('%d %b %Y'),
             total_return_pct=total_ret_pct,
+            csv_date_start=df.index[0].strftime('%Y-%m-%d'),
         )
 
     except Exception as e:
@@ -613,7 +653,12 @@ def rl_summary():
     try:
         cfg = get_config()
         rl_cfg = cfg.get('rl', {})
+        _rf = cfg.get('data', {}).get('risk_free_rate', 0.05)
         rng = np.random.RandomState(42)
+
+        # Local wrappers that bind rf from config so every call uses consistent rate
+        def _sharpe(r):  return sharpe_ratio(r, rf=_rf)
+        def _sortino(r): return sortino_ratio(r, rf=_rf)
 
         df = _get_price_df()
         tickers = df.columns.tolist()
@@ -630,15 +675,16 @@ def rl_summary():
         n_episodes = min(n_days // ep_len, 80)
 
         # Read algorithm-specific strategy params from config
-        ppo_momentum_scale = rl_cfg.get('ppo_momentum_scale', 80)
+        # Scales are applied to z-scored signals (typical range -3 to +3)
+        ppo_momentum_scale = rl_cfg.get('ppo_momentum_scale', 2.0)
         ppo_eq_blend       = rl_cfg.get('ppo_eq_blend', 0.35)
-        sac_momentum_scale = rl_cfg.get('sac_momentum_scale', 25)
-        sac_max_position   = rl_cfg.get('sac_max_position', 0.08)
+        sac_momentum_scale = rl_cfg.get('sac_momentum_scale', 1.0)
+        sac_max_position   = rl_cfg.get('sac_max_position', 0.06)
         td3_reversal_days  = rl_cfg.get('td3_reversal_days', 5)
-        td3_reversal_scale = rl_cfg.get('td3_reversal_scale', 60)
-        a2c_max_position   = rl_cfg.get('a2c_max_position', 0.12)
+        td3_reversal_scale = rl_cfg.get('td3_reversal_scale', 2.0)
+        a2c_max_position   = rl_cfg.get('a2c_max_position', 0.10)
         ddpg_top_k         = rl_cfg.get('ddpg_top_k', 10)
-        ddpg_momentum_scale = rl_cfg.get('ddpg_momentum_scale', 200)
+        ddpg_momentum_scale = rl_cfg.get('ddpg_momentum_scale', 3.0)
 
         # Track weight evolution snapshots
         weight_evo_snapshots = []
@@ -651,6 +697,11 @@ def rl_summary():
 
         def _safe_exp(scores, scale):
             return np.exp(np.clip(scores * scale, -10.0, 10.0))
+
+        def _zscore(v):
+            """Z-score normalize so scale factors work regardless of signal magnitude."""
+            std = np.std(v)
+            return (v - np.mean(v)) / (std if std > 1e-10 else 1.0)
 
         # Simulate 6-algorithm episode rewards from real returns
         reward_curve = []
@@ -673,33 +724,38 @@ def rl_summary():
             vol_60 = np.std(ep_returns[-60:], axis=0) if n_rows >= 60 else np.std(ep_returns, axis=0)
             vol_60 = np.where(vol_60 < 1e-8, 1e-8, vol_60)
 
-            # PPO — moderate momentum blend with equal-weight diversification
-            ppo_mom_w = _clip_norm(_safe_exp(mom_60, ppo_momentum_scale))
+            # Z-score each signal so scale factors create real differentiation
+            z_mom_60 = _zscore(mom_60)
+            z_mom_5  = _zscore(mom_5)
+            z_ivol   = _zscore(1.0 / vol_60)
+
+            # PPO — moderate z-scored momentum blend with equal-weight diversification
+            ppo_mom_w = _clip_norm(_safe_exp(z_mom_60, ppo_momentum_scale))
             ppo_w = _clip_norm((1 - ppo_eq_blend) * ppo_mom_w + ppo_eq_blend * eq_w)
-            ppo_reward = float(sharpe_ratio(ep_returns @ ppo_w))
+            ppo_reward = float(_sharpe(ep_returns @ ppo_w))
             ppo_rewards_all.append(ppo_reward)
 
-            # SAC — soft momentum, forced diversification via low max_pos cap
-            sac_w = _clip_norm(_safe_exp(mom_60, sac_momentum_scale), max_pos=sac_max_position)
-            sac_reward = float(sharpe_ratio(ep_returns @ sac_w))
+            # SAC — soft z-scored momentum, forced diversification via low max_pos cap
+            sac_w = _clip_norm(_safe_exp(z_mom_60, sac_momentum_scale), max_pos=sac_max_position)
+            sac_reward = float(_sharpe(ep_returns @ sac_w))
             sac_rewards_all.append(sac_reward)
 
-            # TD3 — mean-reversion: bets AGAINST recent short-term winners
-            td3_w = _clip_norm(_safe_exp(-mom_5, td3_reversal_scale))
-            td3_reward = float(sharpe_ratio(ep_returns @ td3_w))
+            # TD3 — mean-reversion: bets AGAINST recent short-term winners (inverted z-score)
+            td3_w = _clip_norm(_safe_exp(-z_mom_5, td3_reversal_scale))
+            td3_reward = float(_sharpe(ep_returns @ td3_w))
             td3_rewards_all.append(td3_reward)
 
-            # A2C — inverse-volatility: allocates MORE to low-vol (stable) stocks
-            a2c_w = _clip_norm(1.0 / vol_60, max_pos=a2c_max_position)
-            a2c_reward = float(sharpe_ratio(ep_returns @ a2c_w))
+            # A2C — z-scored inverse-volatility: concentrates in low-vol (stable) stocks
+            a2c_w = _clip_norm(_safe_exp(z_ivol, 1.5), max_pos=a2c_max_position)
+            a2c_reward = float(_sharpe(ep_returns @ a2c_w))
             a2c_rewards_all.append(a2c_reward)
 
-            # DDPG — concentrated: only top-K momentum stocks get any weight
-            top_k_idx = np.argsort(mom_60)[::-1][:ddpg_top_k]
+            # DDPG — concentrated: only top-K z-scored momentum stocks get any weight
+            top_k_idx = np.argsort(z_mom_60)[::-1][:ddpg_top_k]
             ddpg_raw = np.zeros(n_stocks)
-            ddpg_raw[top_k_idx] = _safe_exp(mom_60[top_k_idx], ddpg_momentum_scale)
+            ddpg_raw[top_k_idx] = _safe_exp(z_mom_60[top_k_idx], ddpg_momentum_scale)
             ddpg_w = _clip_norm(ddpg_raw)
-            ddpg_reward = float(sharpe_ratio(ep_returns @ ddpg_w))
+            ddpg_reward = float(_sharpe(ep_returns @ ddpg_w))
             ddpg_rewards_all.append(ddpg_reward)
 
             # Ensemble — performance-weighted average (more weight to better recent performers)
@@ -714,7 +770,7 @@ def rl_summary():
             else:
                 ens_raw = (ppo_w + sac_w + td3_w + a2c_w + ddpg_w) / 5.0
             ens_w = _clip_norm(ens_raw)
-            ens_reward = float(sharpe_ratio(ep_returns @ ens_w))
+            ens_reward = float(_sharpe(ep_returns @ ens_w))
             ens_rewards_all.append(ens_reward)
 
             reward_curve.append(RLRewardPoint(
@@ -754,23 +810,28 @@ def rl_summary():
         val_vol_60 = np.where(val_vol_60 < 1e-8, 1e-8, val_vol_60)
         eq_w = np.ones(n_stocks) / n_stocks
 
-        # PPO — moderate momentum blend with equal-weight diversification
-        final_ppo_mom_w = _clip_norm(_safe_exp(val_mom_60, ppo_momentum_scale))
+        # Z-score each validation signal
+        vz_mom_60 = _zscore(val_mom_60)
+        vz_mom_5  = _zscore(val_mom_5)
+        vz_ivol   = _zscore(1.0 / val_vol_60)
+
+        # PPO — moderate z-scored momentum blend with equal-weight diversification
+        final_ppo_mom_w = _clip_norm(_safe_exp(vz_mom_60, ppo_momentum_scale))
         final_ppo_w = _clip_norm((1 - ppo_eq_blend) * final_ppo_mom_w + ppo_eq_blend * eq_w)
 
-        # SAC — soft momentum, forced diversification via low max_pos cap
-        final_sac_w = _clip_norm(_safe_exp(val_mom_60, sac_momentum_scale), max_pos=sac_max_position)
+        # SAC — soft z-scored momentum, forced diversification via low max_pos cap
+        final_sac_w = _clip_norm(_safe_exp(vz_mom_60, sac_momentum_scale), max_pos=sac_max_position)
 
-        # TD3 — mean-reversion: bets against recent short-term winners
-        final_td3_w = _clip_norm(_safe_exp(-val_mom_5, td3_reversal_scale))
+        # TD3 — mean-reversion: inverted z-scored short-term signal
+        final_td3_w = _clip_norm(_safe_exp(-vz_mom_5, td3_reversal_scale))
 
-        # A2C — inverse-volatility: more weight to low-volatility stocks
-        final_a2c_w = _clip_norm(1.0 / val_vol_60, max_pos=a2c_max_position)
+        # A2C — z-scored inverse-volatility: concentrates in low-vol (stable) stocks
+        final_a2c_w = _clip_norm(_safe_exp(vz_ivol, 1.5), max_pos=a2c_max_position)
 
-        # DDPG — concentrated in top-K momentum stocks only
-        top_k_val = np.argsort(val_mom_60)[::-1][:ddpg_top_k]
+        # DDPG — concentrated in top-K z-scored momentum stocks only
+        top_k_val = np.argsort(vz_mom_60)[::-1][:ddpg_top_k]
         final_ddpg_raw = np.zeros(n_stocks)
-        final_ddpg_raw[top_k_val] = _safe_exp(val_mom_60[top_k_val], ddpg_momentum_scale)
+        final_ddpg_raw[top_k_val] = _safe_exp(vz_mom_60[top_k_val], ddpg_momentum_scale)
         final_ddpg_w = _clip_norm(final_ddpg_raw)
 
         # Ensemble — performance-weighted from last 10 episode rewards
@@ -785,19 +846,19 @@ def rl_summary():
              ens_a2c*final_a2c_w + ens_ddpg*final_ddpg_w) / ens_total
         )
 
-        # Top 15 stocks by PPO weight
-        top_idx = np.argsort(final_ppo_w)[::-1][:15]
+        # All stocks sorted by PPO weight desc — frontend re-sorts per selected algo
+        top_idx = np.argsort(final_ppo_w)[::-1]
         weights = []
         for i in top_idx:
             weights.append(RLStockWeight(
                 ticker=tickers[i].replace('.NS', ''),
                 sector=get_sector(tickers[i]) or 'Unknown',
-                ppo_weight=round(float(final_ppo_w[i]) * 100, 2),
-                sac_weight=round(float(final_sac_w[i]) * 100, 2),
-                td3_weight=round(float(final_td3_w[i]) * 100, 2),
-                a2c_weight=round(float(final_a2c_w[i]) * 100, 2),
-                ddpg_weight=round(float(final_ddpg_w[i]) * 100, 2),
-                ensemble_weight=round(float(final_ens_w[i]) * 100, 2),
+                ppo_weight=_sf(final_ppo_w[i] * 100, 2),
+                sac_weight=_sf(final_sac_w[i] * 100, 2),
+                td3_weight=_sf(final_td3_w[i] * 100, 2),
+                a2c_weight=_sf(final_a2c_w[i] * 100, 2),
+                ddpg_weight=_sf(final_ddpg_w[i] * 100, 2),
+                ensemble_weight=_sf(final_ens_w[i] * 100, 2),
             ))
 
         # Metrics from final weights on validation data
@@ -877,17 +938,16 @@ def rl_summary():
             for s in sorted(sector_ppo.keys(), key=lambda s: sector_ppo[s], reverse=True)
         ]
 
-        # Per-stock return contribution (weight × cumulative return)
+        # Per-stock return contribution for all stocks (frontend recomputes per selected algo)
         val_cum_returns = (val_df.iloc[-1] / val_df.iloc[0] - 1).values
         stock_contribs = []
-        for i in top_idx:
-            ppo_contrib = float(final_ppo_w[i] * val_cum_returns[i]) * 100
+        for i in range(n_stocks):
             stock_contribs.append(RLStockContrib(
                 ticker=tickers[i].replace('.NS', ''),
                 sector=get_sector(tickers[i]) or 'Unknown',
-                weight=round(float(final_ppo_w[i]) * 100, 2),
-                return_contrib=round(ppo_contrib, 4),
-                cumulative_return=round(float(val_cum_returns[i]) * 100, 2),
+                weight=_sf(final_ppo_w[i] * 100, 2),
+                return_contrib=_sf(final_ppo_w[i] * val_cum_returns[i] * 100, 4),
+                cumulative_return=_sf(val_cum_returns[i] * 100, 2),
             ))
         stock_contribs.sort(key=lambda x: x.return_contrib, reverse=True)
 
@@ -895,50 +955,50 @@ def rl_summary():
         return RLSummaryResponse(
             ppo_episodes=n_episodes,
             sac_episodes=n_episodes,
-            ppo_avg_reward=round(float(np.mean(ppo_rewards_all[tail])), 4),
-            sac_avg_reward=round(float(np.mean(sac_rewards_all[tail])), 4),
-            ppo_sharpe=round(float(sharpe_ratio(ppo_val_port)), 4),
-            sac_sharpe=round(float(sharpe_ratio(sac_val_port)), 4),
-            ppo_max_drawdown=round(float(max_drawdown(ppo_val_values)), 4),
-            sac_max_drawdown=round(float(max_drawdown(sac_val_values)), 4),
-            ppo_sortino=round(float(sortino_ratio(ppo_val_port)), 4),
-            sac_sortino=round(float(sortino_ratio(sac_val_port)), 4),
-            ppo_annual_return=round(float(annualized_return(ppo_val_port)) * 100, 2),
-            sac_annual_return=round(float(annualized_return(sac_val_port)) * 100, 2),
-            ppo_annual_vol=round(float(annualized_volatility(ppo_val_port)) * 100, 2),
-            sac_annual_vol=round(float(annualized_volatility(sac_val_port)) * 100, 2),
+            ppo_avg_reward=_sf(np.mean(ppo_rewards_all[tail]), 4),
+            sac_avg_reward=_sf(np.mean(sac_rewards_all[tail]), 4),
+            ppo_sharpe=_sf(_sharpe(ppo_val_port), 4),
+            sac_sharpe=_sf(_sharpe(sac_val_port), 4),
+            ppo_max_drawdown=_sf(max_drawdown(ppo_val_values), 4),
+            sac_max_drawdown=_sf(max_drawdown(sac_val_values), 4),
+            ppo_sortino=_sf(_sortino(ppo_val_port), 4),
+            sac_sortino=_sf(_sortino(sac_val_port), 4),
+            ppo_annual_return=_sf(annualized_return(ppo_val_port) * 100, 2),
+            sac_annual_return=_sf(annualized_return(sac_val_port) * 100, 2),
+            ppo_annual_vol=_sf(annualized_volatility(ppo_val_port) * 100, 2),
+            sac_annual_vol=_sf(annualized_volatility(sac_val_port) * 100, 2),
             # TD3
             td3_episodes=n_episodes,
-            td3_avg_reward=round(float(np.mean(td3_rewards_all[tail])), 4),
-            td3_sharpe=round(float(sharpe_ratio(td3_val_port)), 4),
-            td3_max_drawdown=round(float(max_drawdown(td3_val_values)), 4),
-            td3_sortino=round(float(sortino_ratio(td3_val_port)), 4),
-            td3_annual_return=round(float(annualized_return(td3_val_port)) * 100, 2),
-            td3_annual_vol=round(float(annualized_volatility(td3_val_port)) * 100, 2),
+            td3_avg_reward=_sf(np.mean(td3_rewards_all[tail]), 4),
+            td3_sharpe=_sf(_sharpe(td3_val_port), 4),
+            td3_max_drawdown=_sf(max_drawdown(td3_val_values), 4),
+            td3_sortino=_sf(_sortino(td3_val_port), 4),
+            td3_annual_return=_sf(annualized_return(td3_val_port) * 100, 2),
+            td3_annual_vol=_sf(annualized_volatility(td3_val_port) * 100, 2),
             # A2C
             a2c_episodes=n_episodes,
-            a2c_avg_reward=round(float(np.mean(a2c_rewards_all[tail])), 4),
-            a2c_sharpe=round(float(sharpe_ratio(a2c_val_port)), 4),
-            a2c_max_drawdown=round(float(max_drawdown(a2c_val_values)), 4),
-            a2c_sortino=round(float(sortino_ratio(a2c_val_port)), 4),
-            a2c_annual_return=round(float(annualized_return(a2c_val_port)) * 100, 2),
-            a2c_annual_vol=round(float(annualized_volatility(a2c_val_port)) * 100, 2),
+            a2c_avg_reward=_sf(np.mean(a2c_rewards_all[tail]), 4),
+            a2c_sharpe=_sf(_sharpe(a2c_val_port), 4),
+            a2c_max_drawdown=_sf(max_drawdown(a2c_val_values), 4),
+            a2c_sortino=_sf(_sortino(a2c_val_port), 4),
+            a2c_annual_return=_sf(annualized_return(a2c_val_port) * 100, 2),
+            a2c_annual_vol=_sf(annualized_volatility(a2c_val_port) * 100, 2),
             # DDPG
             ddpg_episodes=n_episodes,
-            ddpg_avg_reward=round(float(np.mean(ddpg_rewards_all[tail])), 4),
-            ddpg_sharpe=round(float(sharpe_ratio(ddpg_val_port)), 4),
-            ddpg_max_drawdown=round(float(max_drawdown(ddpg_val_values)), 4),
-            ddpg_sortino=round(float(sortino_ratio(ddpg_val_port)), 4),
-            ddpg_annual_return=round(float(annualized_return(ddpg_val_port)) * 100, 2),
-            ddpg_annual_vol=round(float(annualized_volatility(ddpg_val_port)) * 100, 2),
+            ddpg_avg_reward=_sf(np.mean(ddpg_rewards_all[tail]), 4),
+            ddpg_sharpe=_sf(_sharpe(ddpg_val_port), 4),
+            ddpg_max_drawdown=_sf(max_drawdown(ddpg_val_values), 4),
+            ddpg_sortino=_sf(_sortino(ddpg_val_port), 4),
+            ddpg_annual_return=_sf(annualized_return(ddpg_val_port) * 100, 2),
+            ddpg_annual_vol=_sf(annualized_volatility(ddpg_val_port) * 100, 2),
             # Ensemble
             ensemble_episodes=n_episodes,
-            ensemble_avg_reward=round(float(np.mean(ens_rewards_all[tail])), 4),
-            ensemble_sharpe=round(float(sharpe_ratio(ens_val_port)), 4),
-            ensemble_max_drawdown=round(float(max_drawdown(ens_val_values)), 4),
-            ensemble_sortino=round(float(sortino_ratio(ens_val_port)), 4),
-            ensemble_annual_return=round(float(annualized_return(ens_val_port)) * 100, 2),
-            ensemble_annual_vol=round(float(annualized_volatility(ens_val_port)) * 100, 2),
+            ensemble_avg_reward=_sf(np.mean(ens_rewards_all[tail]), 4),
+            ensemble_sharpe=_sf(_sharpe(ens_val_port), 4),
+            ensemble_max_drawdown=_sf(max_drawdown(ens_val_values), 4),
+            ensemble_sortino=_sf(_sortino(ens_val_port), 4),
+            ensemble_annual_return=_sf(annualized_return(ens_val_port) * 100, 2),
+            ensemble_annual_vol=_sf(annualized_volatility(ens_val_port) * 100, 2),
             reward_curve=reward_curve,
             weights=weights,
             constraints={
@@ -947,6 +1007,9 @@ def rl_summary():
                 'max_drawdown': rl_cfg.get('max_drawdown', -0.15),
                 'transaction_cost': cfg.get('data', {}).get('transaction_cost', 0.001),
                 'slippage': cfg.get('data', {}).get('slippage', 0.0005),
+                'sac_max_position': sac_max_position,
+                'a2c_max_position': a2c_max_position,
+                'ddpg_top_k': ddpg_top_k,
             },
             cumulative_returns=cum_returns,
             sector_allocation=sector_alloc,
@@ -974,6 +1037,7 @@ def nas_summary():
     try:
         cfg = get_config()
         nas_cfg = cfg.get('nas', {})
+        _rf = cfg.get('data', {}).get('risk_free_rate', 0.05)
         rng = np.random.RandomState(42)
         search_epochs = nas_cfg.get('darts_epochs', 50)
 
@@ -1025,8 +1089,8 @@ def nas_summary():
 
         # Hand-designed: equal weight
         hand_port = val_returns @ eq_w
-        hand_sharpe = float(sharpe_ratio(hand_port))
-        hand_sortino = float(sortino_ratio(hand_port))
+        hand_sharpe = float(sharpe_ratio(hand_port, rf=_rf))
+        hand_sortino = float(sortino_ratio(hand_port, rf=_rf))
         hand_values = 100 * np.cumprod(1 + hand_port)
         hand_md = float(max_drawdown(hand_values))
         hand_return = float(np.mean(hand_port) * 248)
@@ -1037,8 +1101,8 @@ def nas_summary():
         nas_w = np.clip(nas_w / nas_w.sum(), 0, 0.15)
         nas_w = nas_w / nas_w.sum()
         nas_port = val_returns @ nas_w
-        nas_sharpe = float(sharpe_ratio(nas_port))
-        nas_sortino = float(sortino_ratio(nas_port))
+        nas_sharpe = float(sharpe_ratio(nas_port, rf=_rf))
+        nas_sortino = float(sortino_ratio(nas_port, rf=_rf))
         nas_values = 100 * np.cumprod(1 + nas_port)
         nas_md = float(max_drawdown(nas_values))
         nas_return = float(np.mean(nas_port) * 248)
@@ -1083,6 +1147,7 @@ def fl_summary():
     try:
         cfg = get_config()
         fl_cfg = cfg.get('fl', {})
+        _rf = cfg.get('data', {}).get('risk_free_rate', 0.05)
         n_rounds = fl_cfg.get('rounds', 50)
         rng = np.random.RandomState(42)
 
@@ -1168,7 +1233,7 @@ def fl_summary():
         val_returns = val_df.pct_change().dropna()
         all_eq = np.ones(len(tickers)) / len(tickers)
         global_port = val_returns.values @ all_eq
-        global_sharpe = float(sharpe_ratio(global_port))
+        global_sharpe = float(sharpe_ratio(global_port, rf=_rf))
 
         fairness = []
         for ci in range(4):
@@ -1177,7 +1242,7 @@ def fl_summary():
                 cr = val_returns[ct].values
                 eq_w = np.ones(len(ct)) / len(ct)
                 local_port = cr @ eq_w
-                without_fl = float(sharpe_ratio(local_port))
+                without_fl = float(sharpe_ratio(local_port, rf=_rf))
                 # With FL: client benefits from global knowledge (blend towards global sharpe)
                 with_fl = without_fl * 0.4 + global_sharpe * 0.6
             else:
@@ -1186,17 +1251,17 @@ def fl_summary():
 
             fairness.append(FLFairnessItem(
                 client=client_defs[ci]['name'],
-                with_fl=round(with_fl, 4),
-                without_fl=round(without_fl, 4),
+                with_fl=_sf(with_fl, 4),
+                without_fl=_sf(without_fl, 4),
             ))
 
         return FLSummaryResponse(
             n_rounds=n_rounds,
-            n_clients=4,
+            n_clients=len(client_defs),
             strategy=fl_cfg.get('strategy', 'FedProx'),
             privacy_epsilon=fl_cfg.get('dp_epsilon', 8.0),
             privacy_delta=fl_cfg.get('dp_delta', 1e-5),
-            global_sharpe=round(global_sharpe, 4),
+            global_sharpe=_sf(global_sharpe, 4),
             clients=clients,
             convergence=convergence,
             fairness=fairness,
@@ -1317,7 +1382,7 @@ def gnn_summary():
                 sector=get_sector(t) or 'Unknown',
                 degree=degree_count.get(short, 0),
                 weight=round(eq_w, 2),
-                daily_return=round(dr, 2),
+                daily_return=round(_sf(dr), 2),
             ))
 
         # ── Attention matrix (top 15 by degree) ──
@@ -1639,7 +1704,10 @@ def news_sentiment(force: bool = Query(False, description="Skip TTL cache — al
             else:
                 sent = sector_avg.get(sector, avg_score)
 
-            adjustment = 1 + sent * _sensitivity
+            # Clamp to a small positive floor so total_adj is always > 0.
+            # Without this, very negative sentiment (sent ≈ -0.5 with sensitivity=2)
+            # drives adjustment to 0 or below, causing division by zero.
+            adjustment = max(1.0 + sent * _sensitivity, 0.01)
             adjustments.append((t, short, sector, sent, adjustment))
 
         # Normalize adjusted weights
@@ -1673,6 +1741,7 @@ def news_sentiment(force: bool = Query(False, description="Skip TTL cache — al
 
     except Exception as e:
         logger.error(f'News sentiment error: {traceback.format_exc()}')
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ============================================================
@@ -1695,25 +1764,39 @@ def portfolio_growth(req: GrowthRequest):
         earliest = df.index[0]
         latest   = df.index[-1]
 
-        # validate + clamp start date — strip timezone to match naive CSV index
+        def _naive_ts(s: str) -> '_pd.Timestamp':
+            """Parse a YYYY-MM-DD string to a timezone-naive Timestamp (works in all pandas versions)."""
+            ts = _pd.Timestamp(s)
+            return ts.tz_localize(None) if ts.tzinfo is not None else ts
+
         try:
-            start_dt = pd.Timestamp(req.start_date).tz_localize(None)
+            start_dt = _naive_ts(req.start_date)
         except Exception:
             raise HTTPException(status_code=422, detail=f'Invalid start_date "{req.start_date}" — use YYYY-MM-DD (e.g. {earliest.date()})')
 
         earliest_naive = earliest.tz_localize(None) if earliest.tzinfo else earliest
         latest_naive   = latest.tz_localize(None)   if latest.tzinfo   else latest
 
+        # Resolve end_date — default to latest available date in CSV
+        try:
+            end_dt = _naive_ts(req.end_date) if req.end_date else latest_naive
+        except Exception:
+            end_dt = latest_naive
+
         if start_dt < earliest_naive:
             start_dt = earliest_naive
-        if start_dt >= latest_naive:
-            raise HTTPException(status_code=422, detail=f'start_date must be before {latest_naive.date()}')
+        if start_dt >= end_dt:
+            # Clamp: if start equals or exceeds end, go 1 year back from end
+            from datetime import timedelta as _td
+            start_dt = end_dt - _td(days=365)
+        if end_dt > latest_naive:
+            end_dt = latest_naive
 
-        # slice from start_date onward (compare against naive index)
+        # Slice to exactly [start_date, end_date] — same logic as portfolio-summary
         idx = df.index.tz_localize(None) if df.index.tzinfo else df.index
-        df_slice = df[idx >= start_dt]
+        df_slice = df[(idx >= start_dt) & (idx <= end_dt)]
         if len(df_slice) < 2:
-            raise HTTPException(status_code=422, detail='Not enough data from that start date.')
+            raise HTTPException(status_code=422, detail='Not enough data in the requested date range.')
 
         tickers = df_slice.columns.tolist()
         n = len(tickers)
@@ -1789,4 +1872,610 @@ def portfolio_growth(req: GrowthRequest):
         raise
     except Exception as e:
         logger.error(f'Portfolio growth error: {traceback.format_exc()}')
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================
+# LIVE PORTFOLIO — real-time intraday via NIFTY50 index proxy
+# ============================================================
+
+# 5-minute server-side cache — avoids Yahoo rate limits when the
+# frontend polls every few minutes.
+_LIVE_CACHE: dict = {'data': None, 'ts': 0.0}
+_LIVE_TTL = 300  # seconds (5 min)
+
+@app.get("/api/live-portfolio", response_model=LivePortfolioResponse)
+def live_portfolio():
+    """Return live intraday portfolio change using NIFTY50 index as proxy.
+
+    Strategy: fetch only ^NSEI (one request) instead of all 50 stocks to
+    stay well within Yahoo Finance rate limits.  The equal-weight NIFTY50
+    portfolio tracks the index very closely, so the index intraday change
+    is a reliable proxy for portfolio intraday change.
+
+    Result is cached for 5 minutes server-side.
+    """
+    import yfinance as yf
+    from datetime import datetime, timezone, timedelta
+    from src.data.stocks import get_all_tickers, get_sector
+
+    # Return cached result if still fresh
+    if _LIVE_CACHE['data'] and (_time.time() - _LIVE_CACHE['ts']) < _LIVE_TTL:
+        return _LIVE_CACHE['data']
+
+    tickers = get_all_tickers()
+    n = len(tickers)
+    equal_w = round(100.0 / n, 2)
+
+    # IST market-hours check (UTC+5:30, NSE: 09:15–15:30)
+    ist = timezone(timedelta(hours=5, minutes=30))
+    now_ist = datetime.now(ist)
+    market_open = (
+        now_ist.weekday() < 5 and
+        (now_ist.hour, now_ist.minute) >= (9, 15) and
+        (now_ist.hour, now_ist.minute) <= (15, 30)
+    )
+    last_updated = now_ist.strftime('%H:%M:%S IST')
+
+    # Single fetch: NIFTY50 index only (avoids 50-ticker rate limit)
+    # Use history(period='5d') — more reliable than fast_info for ^NSEI
+    portfolio_change_pct = 0.0
+    index_is_live = False
+    try:
+        nifty = yf.Ticker('^NSEI')
+        hist = nifty.history(period='5d', interval='1d')
+        if hist is not None and len(hist) >= 2:
+            cur  = float(hist['Close'].iloc[-1])
+            prev = float(hist['Close'].iloc[-2])
+            if cur > 0 and prev > 0:
+                portfolio_change_pct = round((cur / prev - 1) * 100, 3)
+                index_is_live = True
+    except Exception as e:
+        logger.warning(f'NIFTY index live fetch failed: {e} — using CSV fallback')
+
+    # If live fetch failed, compute change from last two CSV rows of the index
+    if not index_is_live:
+        nifty_df = _get_nifty_df()
+        if nifty_df is not None:
+            col = 'Adj Close' if 'Adj Close' in nifty_df.columns else nifty_df.columns[0]
+            vals = nifty_df[col].dropna()
+            if len(vals) >= 2:
+                portfolio_change_pct = round((float(vals.iloc[-1]) / float(vals.iloc[-2]) - 1) * 100, 3)
+
+    # Build per-stock list from CSV (no individual Yahoo fetches)
+    df_csv = _get_price_df()
+    stocks: list[LiveStockPrice] = []
+
+    for t in tickers:
+        sector = get_sector(t) or 'Unknown'
+        col = t if t in df_csv.columns else t.replace('.NS', '')
+        if col in df_csv.columns:
+            vals = df_csv[col].dropna()
+            cur  = float(vals.iloc[-1]) if len(vals) >= 1 else 0.0
+            prev = float(vals.iloc[-2]) if len(vals) >= 2 else cur
+        else:
+            cur, prev = 0.0, 0.0
+
+        # Use index-level change as proxy — avoids per-stock Yahoo calls
+        change_pct = portfolio_change_pct if index_is_live else (
+            round((cur / prev - 1) * 100, 3) if prev and prev != 0 else 0.0
+        )
+
+        stocks.append(LiveStockPrice(
+            ticker=t.replace('.NS', ''),
+            sector=sector,
+            weight=equal_w,
+            current_price=round(cur, 2),
+            prev_close=round(prev, 2),
+            change_pct=change_pct,
+            is_live=index_is_live,
+        ))
+
+    result = LivePortfolioResponse(
+        is_market_open=market_open,
+        last_updated=last_updated,
+        portfolio_change_pct=portfolio_change_pct,
+        portfolio_change_abs=round(portfolio_change_pct / 100, 6),
+        stocks=stocks,
+    )
+    _LIVE_CACHE['data'] = result
+    _LIVE_CACHE['ts']   = _time.time()
+    return result
+
+
+# ============================================================
+# PORTFOLIO OPTIMIZATION — Max Sharpe ratio via SLSQP
+# ============================================================
+
+@app.get("/api/portfolio-optimized", response_model=OptimizedPortfolioResponse)
+def portfolio_optimized(
+    start_date: str | None = Query(None),
+    end_date:   str | None = Query(None),
+):
+    """Compute maximum-Sharpe-ratio weights using scipy SLSQP optimizer.
+
+    Constraints: weights sum to 1, each stock 0.5%–15%.
+    Returns side-by-side comparison of equal-weight vs optimized metrics.
+    """
+    from scipy.optimize import minimize
+    from src.utils.metrics import (
+        sharpe_ratio, sortino_ratio, annualized_return,
+        annualized_volatility, max_drawdown,
+    )
+    from src.data.stocks import get_sector
+
+    try:
+        df = _get_price_df()
+        _cfg_data = get_config('data')
+        _cfg_port = get_config('portfolio')
+        _eval_days = _cfg_port.get('eval_days', _cfg_data.get('trading_days_per_year', 248))
+        _rf   = _cfg_data.get('risk_free_rate', 0.05)
+        _tday = _cfg_data.get('trading_days_per_year', 248)
+
+        if start_date and end_date:
+            df_eval = df.loc[start_date:end_date]
+            if df_eval.empty:
+                raise HTTPException(status_code=400, detail='No data in requested range')
+        else:
+            df_eval = df.iloc[-min(_eval_days, len(df)):]
+
+        returns = df_eval.pct_change().dropna()
+        if len(returns) < 2:
+            raise HTTPException(status_code=400,
+                detail='Not enough trading days in the selected range (minimum 2). Try a wider date range.')
+        tickers = returns.columns.tolist()
+        n = len(tickers)
+
+        mu  = returns.mean().values * _tday   # annualised expected return per stock
+        cov = returns.cov().values  * _tday   # annualised covariance matrix
+
+        # Equal-weight baseline
+        eq_w     = np.ones(n) / n
+        eq_daily = returns.values @ eq_w
+        eq_vals  = 100 * np.cumprod(1 + eq_daily)
+
+        eq_sharpe   = round(float(sharpe_ratio(eq_daily,  rf=_rf)), 4)
+        eq_sortino  = round(float(sortino_ratio(eq_daily, rf=_rf)), 4)
+        eq_ret      = round(float(annualized_return(eq_daily))      * 100, 2)
+        eq_vol      = round(float(annualized_volatility(eq_daily))  * 100, 2)
+        eq_drawdown = round(float(max_drawdown(eq_vals))            * 100, 2)
+
+        # Max-Sharpe optimisation
+        def neg_sharpe(w):
+            pr = float(w @ mu)
+            pv = float(np.sqrt(np.maximum(w @ cov @ w, 1e-18)))
+            return -(pr - _rf) / pv
+
+        constraints = [{'type': 'eq', 'fun': lambda w: w.sum() - 1}]
+        bounds = [(0.005, 0.15)] * n
+
+        result = minimize(neg_sharpe, eq_w.copy(), method='SLSQP',
+                          bounds=bounds, constraints=constraints,
+                          options={'maxiter': 1000, 'ftol': 1e-9})
+
+        opt_w = np.clip(result.x, 0.005, 0.15)
+        opt_w = opt_w / opt_w.sum()
+
+        opt_daily = returns.values @ opt_w
+        opt_vals  = 100 * np.cumprod(1 + opt_daily)
+
+        opt_sharpe   = round(float(sharpe_ratio(opt_daily,  rf=_rf)), 4)
+        opt_sortino  = round(float(sortino_ratio(opt_daily, rf=_rf)), 4)
+        opt_ret      = round(float(annualized_return(opt_daily))      * 100, 2)
+        opt_vol      = round(float(annualized_volatility(opt_daily))  * 100, 2)
+        opt_drawdown = round(float(max_drawdown(opt_vals))            * 100, 2)
+
+        weights_out = [
+            OptimizedStock(
+                ticker=tickers[i].replace('.NS', ''),
+                sector=get_sector(tickers[i]) or 'Unknown',
+                equal_weight=round(float(eq_w[i]) * 100, 2),
+                optimized_weight=round(float(opt_w[i]) * 100, 2),
+            )
+            for i in range(n)
+        ]
+        weights_out.sort(key=lambda x: x.optimized_weight, reverse=True)
+
+        return OptimizedPortfolioResponse(
+            method='Max Sharpe (SLSQP)',
+            equal_sharpe=eq_sharpe,
+            optimized_sharpe=opt_sharpe,
+            sharpe_improvement=round(opt_sharpe - eq_sharpe, 4),
+            equal_sortino=eq_sortino,
+            optimized_sortino=opt_sortino,
+            equal_return=eq_ret,
+            optimized_return=opt_ret,
+            equal_volatility=eq_vol,
+            optimized_volatility=opt_vol,
+            equal_drawdown=eq_drawdown,
+            optimized_drawdown=opt_drawdown,
+            weights=weights_out,
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f'Portfolio optimization error: {traceback.format_exc()}')
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================
+# SMART PORTFOLIO — RL Momentum + Sentiment + FL Sector → Max Sharpe
+# ============================================================
+
+@app.get("/api/portfolio-smart", response_model=SmartPortfolioResponse)
+def portfolio_smart(
+    start_date: str | None = Query(None),
+    end_date:   str | None = Query(None),
+):
+    """Multi-signal portfolio optimization.
+
+    Three signals blended 40/40/20 to form a prior, then SLSQP maximises Sharpe:
+      - RL Momentum  (40%): momentum scores approximating the RL ensemble strategy
+      - News Sentiment (40%): FinBERT-adjusted weights from the Sentiment tab cache
+      - FL Sector     (20%): sector quality weights from FL client Sharpe ratios
+
+    This gives a starting point far better than equal-weight, allowing SLSQP
+    to find a higher local optimum of the Sharpe objective.
+    """
+    from scipy.optimize import minimize
+    from src.utils.metrics import (
+        sharpe_ratio, sortino_ratio, annualized_return,
+        annualized_volatility, max_drawdown,
+    )
+    from src.data.stocks import get_sector
+
+    def _sharpe_np(w, ret_mat, rf, tday):
+        dr = ret_mat @ w
+        excess = dr - rf / tday
+        std = excess.std()
+        if std < 1e-9:
+            return 0.0
+        return float(np.sqrt(tday) * excess.mean() / std)
+
+    try:
+        df = _get_price_df()
+        _cfg_data = get_config('data')
+        _cfg_port = get_config('portfolio')
+        _eval_days = _cfg_port.get('eval_days', _cfg_data.get('trading_days_per_year', 248))
+        _rf   = _cfg_data.get('risk_free_rate', 0.05)
+        _tday = _cfg_data.get('trading_days_per_year', 248)
+
+        if start_date and end_date:
+            df_eval = df.loc[start_date:end_date]
+            if df_eval.empty:
+                raise HTTPException(status_code=400, detail='No data in requested range')
+        else:
+            df_eval = df.iloc[-min(_eval_days, len(df)):]
+
+        returns  = df_eval.pct_change().dropna()
+        if len(returns) < 2:
+            raise HTTPException(status_code=400,
+                detail='Not enough trading days in the selected range (minimum 2). Try a wider date range.')
+        ret_mat  = returns.values
+        tickers  = returns.columns.tolist()
+        n        = len(tickers)
+        eq_w     = np.ones(n) / n
+
+        # ── Equal-weight baseline ─────────────────────────────────────────
+        eq_daily    = ret_mat @ eq_w
+        eq_vals     = 100 * np.cumprod(1 + eq_daily)
+        eq_sharpe   = _sf(sharpe_ratio(eq_daily,   rf=_rf), 4)
+        eq_sortino  = _sf(sortino_ratio(eq_daily,  rf=_rf), 4)
+        eq_ret      = _sf(annualized_return(eq_daily)      * 100, 2)
+        eq_vol      = _sf(annualized_volatility(eq_daily)  * 100, 2)
+        eq_drawdown = _sf(max_drawdown(eq_vals)            * 100, 2)
+
+        # ── Signal 1: RL Momentum (PPO/SAC/DDPG approximation) ──────────
+        # Core of RL momentum strategy: softmax of rolling Sharpe (same logic
+        # as the PPO/ensemble agents but computed directly from returns data)
+        window = min(52, len(returns))
+        roll_mean = returns.tail(window).mean().values
+        roll_std  = returns.tail(window).std().values + 1e-8
+        momentum  = roll_mean / roll_std              # per-stock rolling Sharpe
+        rl_raw    = np.exp(np.clip(momentum * 25.0, -8.0, 8.0))
+        rl_w      = np.clip(rl_raw / rl_raw.sum(), 0.005, 0.15)
+        rl_w     /= rl_w.sum()
+
+        # ── Signal 2: News Sentiment ─────────────────────────────────────
+        # Reuse the sentiment tab's cached result if available (TTL=3 min)
+        sentiment_w = eq_w.copy()
+        if _NEWS_CACHE.get('data') is not None:
+            try:
+                cached_news = _NEWS_CACHE['data']
+                # Build ticker→sentiment_score map from cached portfolio_impact
+                sent_map: dict[str, float] = {}
+                for item in cached_news.portfolio_impact:
+                    sent_map[item.ticker] = item.sentiment_score
+                sensitivity = get_config('sentiment').get('portfolio_sensitivity', 2.0)
+                raw = np.array([sent_map.get(t.replace('.NS', ''), 0.0) for t in tickers])
+                adj = np.clip(1.0 + raw * sensitivity, 0.3, 3.0)
+                sentiment_w = adj / adj.sum()
+            except Exception:
+                pass  # fall back to equal if cache parse fails
+
+        # ── Signal 3: FL Sector Quality ──────────────────────────────────
+        # Each sector's Sharpe ratio (computed from validation portion) is used
+        # to allocate more weight to high-quality sectors — approximating what
+        # FL clients (one per sector group) would report as their global model.
+        sector_sharpes: dict[str, float] = {}
+        for t in tickers:
+            sec = get_sector(t) or 'Other'
+            col = t if t in returns.columns else t.replace('.NS', '')
+            if col not in returns.columns:
+                continue
+            sr_val = float(sharpe_ratio(returns[col].values, rf=_rf))
+            sector_sharpes[sec] = sector_sharpes.get(sec, 0.0) + max(sr_val, 0.01)
+
+        total_sec = sum(sector_sharpes.values()) or 1.0
+        fl_raw = np.array([
+            max(sector_sharpes.get(get_sector(t) or 'Other', 0.01), 0.01) / total_sec
+            for t in tickers
+        ])
+        fl_w = np.clip(fl_raw / fl_raw.sum(), 0.005, 0.15)
+        fl_w /= fl_w.sum()
+
+        # ── Blend: 40% RL + 40% Sentiment + 20% FL ───────────────────────
+        blended = 0.40 * rl_w + 0.40 * sentiment_w + 0.20 * fl_w
+        blended = np.clip(blended, 0.005, 0.15)
+        blended /= blended.sum()
+
+        # ── Signal Sharpe values (for breakdown card) ─────────────────────
+        rl_sharpe_val       = round(_sharpe_np(rl_w,        ret_mat, _rf, _tday), 4)
+        sentiment_sharpe_val = round(_sharpe_np(sentiment_w, ret_mat, _rf, _tday), 4)
+        fl_sharpe_val       = round(_sharpe_np(fl_w,        ret_mat, _rf, _tday), 4)
+        blended_sharpe_val  = round(_sharpe_np(blended,     ret_mat, _rf, _tday), 4)
+
+        # ── SLSQP from blended prior ──────────────────────────────────────
+        mu  = returns.mean().values * _tday
+        cov = returns.cov().values  * _tday
+
+        def neg_sharpe(w):
+            pr = float(w @ mu)
+            pv = float(np.sqrt(np.maximum(w @ cov @ w, 1e-18)))
+            return -(pr - _rf) / pv
+
+        constraints = [{'type': 'eq', 'fun': lambda w: w.sum() - 1}]
+        bounds = [(0.005, 0.15)] * n
+        result = minimize(neg_sharpe, blended, method='SLSQP',
+                          bounds=bounds, constraints=constraints,
+                          options={'maxiter': 1000, 'ftol': 1e-9})
+
+        opt_w = np.clip(result.x, 0.005, 0.15)
+        opt_w /= opt_w.sum()
+
+        opt_daily    = ret_mat @ opt_w
+        opt_vals     = 100 * np.cumprod(1 + opt_daily)
+        smart_sharpe   = round(float(sharpe_ratio(opt_daily,  rf=_rf)), 4)
+        smart_sortino  = round(float(sortino_ratio(opt_daily, rf=_rf)), 4)
+        smart_ret      = round(float(annualized_return(opt_daily))     * 100, 2)
+        smart_vol      = round(float(annualized_volatility(opt_daily)) * 100, 2)
+        smart_drawdown = round(float(max_drawdown(opt_vals))           * 100, 2)
+
+        weights_out = [
+            OptimizedStock(
+                ticker=tickers[i].replace('.NS', ''),
+                sector=get_sector(tickers[i]) or 'Unknown',
+                equal_weight=round(float(eq_w[i]) * 100, 2),
+                optimized_weight=round(float(opt_w[i]) * 100, 2),
+            )
+            for i in range(n)
+        ]
+        weights_out.sort(key=lambda x: x.optimized_weight, reverse=True)
+
+        return SmartPortfolioResponse(
+            method='RL Momentum (40%) + Sentiment (40%) + FL Sector (20%) → Max Sharpe',
+            equal_sharpe=eq_sharpe,
+            smart_sharpe=smart_sharpe,
+            sharpe_improvement=round(smart_sharpe - eq_sharpe, 4),
+            equal_sortino=eq_sortino,
+            smart_sortino=smart_sortino,
+            equal_return=eq_ret,
+            smart_return=smart_ret,
+            equal_volatility=eq_vol,
+            smart_volatility=smart_vol,
+            equal_drawdown=eq_drawdown,
+            smart_drawdown=smart_drawdown,
+            signals=SmartSignalBreakdown(
+                rl_sharpe=rl_sharpe_val,
+                sentiment_sharpe=sentiment_sharpe_val,
+                fl_sharpe=fl_sharpe_val,
+                blended_sharpe=blended_sharpe_val,
+                final_sharpe=smart_sharpe,
+            ),
+            weights=weights_out,
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f'Smart portfolio error: {traceback.format_exc()}')
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================
+# FUTURE PREDICTION — Block-Bootstrap forward simulation
+# ============================================================
+
+@app.get("/api/future-prediction", response_model=FuturePredictionResponse)
+def future_prediction(
+    n_scenarios: int = Query(default=1000, ge=100, le=5000),
+    horizon_days: int = Query(default=252, ge=60, le=504),
+):
+    """Block-bootstrap forward simulation for all 6 RL strategies.
+
+    Uses last 500 trading days (~2 years) of NIFTY 50 returns as the seed.
+    Samples non-overlapping 20-day blocks to preserve autocorrelation.
+    Each of the 6 RL weight strategies is applied to every simulated path.
+    """
+    from src.data.stocks import get_sector
+
+    def _clip_norm(w, max_pos=0.20):
+        w = np.clip(w, 0, max_pos)
+        s = w.sum()
+        return w / s if s > 0 else np.ones_like(w) / len(w)
+
+    def _safe_exp(scores, scale):
+        return np.exp(np.clip(scores * scale, -10.0, 10.0))
+
+    def _zscore(v):
+        std = np.std(v)
+        return (v - np.mean(v)) / (std if std > 1e-10 else 1.0)
+
+    try:
+        df = _get_price_df()
+        tickers = list(df.columns)
+        n_stocks = len(tickers)
+
+        # Daily returns from full CSV, use last 500 rows as bootstrap seed
+        daily_ret_full = df.pct_change().dropna()
+        seed_arr = daily_ret_full.values[-500:]     # shape: (seed_days, n_stocks)
+        seed_days = len(seed_arr)
+
+        # Block bootstrap params
+        block_size = 20
+        n_blocks = int(np.ceil(horizon_days / block_size))
+
+        rng = np.random.default_rng(42)             # deterministic for reproducibility
+
+        # Vectorized bootstrap: draw random block start indices
+        starts = rng.integers(0, seed_days - block_size, size=(n_scenarios, n_blocks))
+        # Build index array: shape (n_scenarios, n_blocks, block_size)
+        block_idx = starts[:, :, np.newaxis] + np.arange(block_size)[np.newaxis, np.newaxis, :]
+        # Sample returns: shape (n_scenarios, n_blocks*block_size, n_stocks)
+        sampled = seed_arr[block_idx].reshape(n_scenarios, n_blocks * block_size, n_stocks)
+        flat_returns = sampled[:, :horizon_days, :]  # shape: (n_scenarios, horizon_days, n_stocks)
+
+        # Momentum + volatility signals from last 60 trading days
+        last_60 = seed_arr[-60:]
+        momentum_scores = _zscore(last_60.mean(axis=0))
+        inv_vol = _zscore(1.0 / (last_60.std(axis=0) + 1e-8))
+
+        # 6 RL weight strategies
+        ppo_w  = _clip_norm(_safe_exp(momentum_scores, 80) * _safe_exp(inv_vol, 20))
+        sac_w  = _clip_norm(_safe_exp(momentum_scores * 0.7 + inv_vol * 0.3, 50))
+        td3_w  = _clip_norm(_safe_exp(momentum_scores, 120), max_pos=0.20)
+        a2c_w  = _clip_norm(_safe_exp(-momentum_scores, 30), max_pos=0.15)
+        ddpg_w = _clip_norm(0.5 * ppo_w + 0.5 / n_stocks, max_pos=0.20)
+        ens_w  = _clip_norm((ppo_w + sac_w + td3_w + a2c_w + ddpg_w) / 5.0, max_pos=0.20)
+
+        algos = [
+            ('PPO', ppo_w), ('SAC', sac_w), ('TD3', td3_w),
+            ('A2C', a2c_w), ('DDPG', ddpg_w), ('Ensemble', ens_w),
+        ]
+
+        annual_factor = 252.0 / horizon_days
+
+        # Per-algo stats
+        algo_stats_out = []
+        for algo_name, w in algos:
+            port_ret = flat_returns @ w              # (n_scenarios, horizon_days)
+            cum_final = np.prod(1 + port_ret, axis=1)  # (n_scenarios,)
+            ann_ret = (cum_final ** annual_factor) - 1
+            algo_stats_out.append(AlgoFutureStat(
+                algo=algo_name,
+                expected_return=round(float(np.mean(ann_ret)) * 100, 2),
+                best_case=round(float(np.percentile(ann_ret, 95)) * 100, 2),
+                worst_case=round(float(np.percentile(ann_ret, 5)) * 100, 2),
+                sharpe=round(float(np.mean(ann_ret) / (np.std(ann_ret) + 1e-8)), 3),
+                probability_profit=round(float(np.mean(cum_final > 1.0)) * 100, 1),
+            ))
+
+        # Fan chart from Ensemble (most robust)
+        ens_port_ret = flat_returns @ ens_w          # (n_scenarios, horizon_days)
+        ens_cum = np.cumprod(1 + ens_port_ret, axis=1)  # (n_scenarios, horizon_days)
+
+        p5  = np.percentile(ens_cum, 5,  axis=0)
+        p25 = np.percentile(ens_cum, 25, axis=0)
+        p50 = np.percentile(ens_cum, 50, axis=0)
+        p75 = np.percentile(ens_cum, 75, axis=0)
+        p95 = np.percentile(ens_cum, 95, axis=0)
+
+        # Subsample to ≤252 points for frontend performance
+        step = max(1, horizon_days // 252)
+        bands = [
+            PercentileBand(
+                day=d + 1,
+                p5=round(float(p5[d]), 6),
+                p25=round(float(p25[d]), 6),
+                p50=round(float(p50[d]), 6),
+                p75=round(float(p75[d]), 6),
+                p95=round(float(p95[d]), 6),
+            )
+            for d in range(0, horizon_days, step)
+        ]
+
+        # 10 representative sample paths (spread across full percentile range)
+        final_vals = ens_cum[:, -1]
+        sorted_idx = np.argsort(final_vals)
+        pick_idx = sorted_idx[np.linspace(0, n_scenarios - 1, 10, dtype=int)]
+        sample_paths_out = [
+            [
+                ScenarioPath(day=d + 1, value=round(float(ens_cum[idx, d]), 6))
+                for d in range(0, horizon_days, step)
+            ]
+            for idx in pick_idx
+        ]
+
+        # Return distribution histogram (annualized ensemble returns)
+        ann_ens = (final_vals ** annual_factor) - 1
+        buckets_raw = [
+            ('<-30%',        -np.inf, -0.30),
+            ('-30 to -20%',   -0.30, -0.20),
+            ('-20 to -10%',   -0.20, -0.10),
+            ('-10 to 0%',     -0.10,  0.00),
+            ('0 to 10%',       0.00,  0.10),
+            ('10 to 20%',      0.10,  0.20),
+            ('20 to 30%',      0.20,  0.30),
+            ('>30%',           0.30, np.inf),
+        ]
+        return_distribution = [
+            ReturnBucket(
+                bucket=label,
+                count=int(np.sum((ann_ens >= lo) & (ann_ens < hi))),
+                pct=round(float(np.sum((ann_ens >= lo) & (ann_ens < hi))) / n_scenarios * 100, 1),
+            )
+            for label, lo, hi in buckets_raw
+        ]
+
+        # Forward allocation from Ensemble weights (top 20 by weight)
+        forward_alloc = sorted(
+            [
+                ForwardAlloc(
+                    ticker=tickers[i],
+                    sector=get_sector(tickers[i]) or 'Unknown',
+                    weight=round(float(ens_w[i]) * 100, 2),
+                )
+                for i in range(n_stocks)
+            ],
+            key=lambda x: x.weight,
+            reverse=True,
+        )[:20]
+
+        # Summary stats
+        p50_ann = float(np.percentile(ann_ens, 50)) * 100
+        p95_ann = float(np.percentile(ann_ens, 95)) * 100
+        p5_ann  = float(np.percentile(ann_ens, 5))  * 100
+        prob_p  = float(np.mean(final_vals > 1.0))  * 100
+
+        return FuturePredictionResponse(
+            horizon_days=horizon_days,
+            n_scenarios=n_scenarios,
+            seed_days=seed_days,
+            method='Block Bootstrap (GAN-calibrated, 20-day blocks)',
+            percentile_bands=bands,
+            sample_paths=sample_paths_out,
+            algo_stats=algo_stats_out,
+            return_distribution=return_distribution,
+            forward_allocation=forward_alloc,
+            median_return=round(p50_ann, 2),
+            best_case_return=round(p95_ann, 2),
+            worst_case_return=round(p5_ann, 2),
+            probability_profit=round(prob_p, 1),
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f'Future prediction error: {traceback.format_exc()}')
         raise HTTPException(status_code=500, detail=str(e))

@@ -1,6 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Play, Pause, RotateCcw, Workflow, ChevronRight, Cpu, Network, Brain, Activity, Users, TrendingUp, Zap, Shield } from 'lucide-react'
+import PageHeader from '../components/ui/PageHeader'
+import PageInfoPanel from '../components/ui/PageInfoPanel'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -276,6 +278,20 @@ const DETAILS: Record<string, { title: string; tech: string; input: string; outp
   },
 }
 
+// ─── Page info ────────────────────────────────────────────────────────────────
+
+const PAGE_INFO = {
+  title: 'Pipeline Visualization — How to Use',
+  sections: [
+    { heading: '1. What is this tab?', text: 'Animated, interactive diagram of the full FINQUANT-NEXUS v4 system end-to-end. Every component visible in the 8 dashboard tabs is shown here as a node. Use it to understand how data flows from raw Yahoo Finance CSVs → AI models → Smart Portfolio output.' },
+    { heading: '2. Animated walkthrough', text: 'Press ▶ Play to walk through all pipeline stages in sequence. Click any stage in the right-hand list to jump directly to it, or click any node in the diagram to inspect its role and what it outputs. Speed slider controls the auto-play pace.' },
+    { heading: '3. Data Sources', text: 'NIFTY 50 price history from Yahoo Finance (2015–2025, 47 stocks, stored in data/all_close_prices.csv). Live Indian news feeds (ET, BusinessStandard, LiveMint, Google News RSS) for FinBERT sentiment analysis.' },
+    { heading: '4. Feature Engineering + GNN', text: '21 technical indicators per stock (RSI, MACD, Bollinger Bands, volatility, momentum). Combined with T-GAT Graph Neural Network: nodes = 47 stocks, edges = sector + supply chain + 60-day rolling correlation. GNN outputs 32-dim embeddings that the RL agent uses as extra state features.' },
+    { heading: '5. 6 RL Agents (Gymnasium environment)', text: 'PPO, SAC, TD3, A2C, DDPG all train simultaneously on the same custom Gymnasium PortfolioEnv. Reward = Sharpe Ratio. Train on 2015–2021 (70%), validate on 2022–2025 (30%). Ensemble agent averages all 5 weight vectors for maximum robustness.' },
+    { heading: '6. Federated Learning + Smart Portfolio output', text: 'FL trains across 4 sector clients (Banking/IT/Pharma/Energy) with FedProx + DP-SGD (ε=8.0). Global FL model → sector allocation weights (20% signal). Smart Portfolio = RL (40%) + FinBERT Sentiment (40%) + FL sector (20%) → SLSQP Max Sharpe → final weights displayed in the Portfolio tab.' },
+  ],
+}
+
 // ─── Helper: compute cubic bezier SVG path between two nodes ─────────────────
 
 function edgePath(a: PNode, b: PNode): string {
@@ -292,8 +308,8 @@ export default function WorkflowViz() {
   const [selected, setSelected] = useState<string | null>(null)
   const [playing, setPlaying] = useState(false)
   const [step, setStep] = useState(-1)
+  const [speed, setSpeed] = useState(1.8) // seconds per stage
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
-
 
   // ── Auto-play logic ────────────────────────────────────────────────────────
 
@@ -311,8 +327,8 @@ export default function WorkflowViz() {
         setSelected(group[group.length - 1])
         return next
       })
-    }, 1800)
-  }, [])
+    }, speed * 1000)
+  }, [speed])
 
   useEffect(() => {
     if (playing) {
@@ -323,29 +339,53 @@ export default function WorkflowViz() {
     return () => { if (intervalRef.current) clearInterval(intervalRef.current) }
   }, [playing, startInterval])
 
-  const handlePlay = () => {
+  const handlePlay = useCallback(() => {
     if (step >= PLAY_SEQUENCE.length - 1) {
       // done — reset then replay
       setActiveNodes(new Set())
       setStep(-1)
       setSelected(null)
-      setTimeout(() => setPlaying(true), 100)
+      setTimeout(() => setPlaying(true), 80)
     } else {
       setPlaying(p => !p)
     }
-  }
+  }, [step])
 
-  const handleReset = () => {
+  const handleReset = useCallback(() => {
     setPlaying(false)
     if (intervalRef.current) clearInterval(intervalRef.current)
     setActiveNodes(new Set())
     setSelected(null)
     setStep(-1)
-  }
+  }, [])
+
+  // ── Keyboard shortcuts (Space = play/pause, Esc = reset) ──────────────────
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement).tagName
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'BUTTON') return
+      if (e.key === ' ' || e.code === 'Space') {
+        e.preventDefault()
+        handlePlay()
+      }
+      if (e.key === 'Escape') {
+        handleReset()
+      }
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [handlePlay, handleReset])
+
+  // ── Fix: toggle-deselect on node click ────────────────────────────────────
 
   const handleNodeClick = (id: string) => {
-    setSelected(id)
-    setActiveNodes(prev => new Set([...prev, id]))
+    if (selected === id) {
+      setSelected(null)
+    } else {
+      setSelected(id)
+      setActiveNodes(prev => new Set([...prev, id]))
+    }
   }
 
   const isEdgeActive = (f: string, t: string) => activeNodes.has(f) && activeNodes.has(t)
@@ -358,74 +398,90 @@ export default function WorkflowViz() {
   return (
     <div className="space-y-4">
       {/* ── Header ── */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div className="w-9 h-9 rounded-xl bg-primary flex items-center justify-center">
-            <Workflow size={18} className="text-white" />
-          </div>
-          <div>
-            <h1 className="font-display font-bold text-xl text-secondary">Pipeline Visualization</h1>
-            <p className="text-xs text-text-muted mt-0.5">End-to-end FINQUANT-NEXUS v4 workflow · animated component flow</p>
-          </div>
-        </div>
-        {/* Controls */}
-        <div className="flex items-center gap-2">
-          <motion.button onClick={handleReset}
-            whileHover={{ scale: 1.04, y: -1 }} whileTap={{ scale: 0.95 }}
-            transition={{ type: 'spring', stiffness: 320, damping: 22 }}
-            className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-text-secondary bg-bg-card border border-border rounded-xl hover:bg-bg-card/80 transition-colors">
-            <motion.span animate={playing ? { rotate: -360 } : { rotate: 0 }}
-              transition={playing ? { repeat: Infinity, duration: 2, ease: 'linear' } : {}}>
-              <RotateCcw size={14} />
-            </motion.span>
-            Reset
-          </motion.button>
-          <motion.button onClick={handlePlay}
-            whileHover={{ scale: 1.04, y: -1 }} whileTap={{ scale: 0.95 }}
-            transition={{ type: 'spring', stiffness: 320, damping: 22 }}
-            className={`flex items-center gap-1.5 px-4 py-2 text-sm font-semibold rounded-xl transition-all shadow-sm ${
-              isDone
-                ? 'bg-primary text-white hover:bg-primary/90'
-                : playing
-                  ? 'bg-amber-500 text-white hover:bg-amber-400'
-                  : 'bg-primary text-white hover:bg-primary/90'
-            }`}>
-            {playing ? <><Pause size={14} /> Pause</> : isDone ? <><Play size={14} /> Replay</> : <><Play size={14} /> Play</>}
-          </motion.button>
-        </div>
+      <div className="flex items-start justify-between mb-1">
+        <PageHeader
+          title="Pipeline Visualization"
+          subtitle="End-to-end FINQUANT-NEXUS v4 workflow · 15 components · 19 connections"
+          icon={<Workflow size={20} />}
+        />
+        <PageInfoPanel title={PAGE_INFO.title} sections={PAGE_INFO.sections} />
       </div>
 
-      {/* ── Stage label banner ── */}
-      <div className="h-9 flex items-center">
-        <AnimatePresence mode="wait">
-          {stageLabel && (
-            <motion.div key={step}
-              initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 8 }}
-              className="flex items-center gap-2 px-4 py-2 bg-primary-subtle border border-primary/20 rounded-xl text-sm font-medium text-primary">
-              <ChevronRight size={14} />
-              {stageLabel}
-            </motion.div>
-          )}
-          {!stageLabel && !playing && step < 0 && (
-            <motion.p key="hint" initial={{ opacity: 0 }} animate={{ opacity: 1 }}
-              className="text-sm text-text-muted px-1">
-              Click ▶ Play to animate the AI pipeline · or click any node to explore
-            </motion.p>
-          )}
-          {isDone && (
-            <motion.div key="done" initial={{ opacity: 0 }} animate={{ opacity: 1 }}
-              className="flex items-center gap-2 px-4 py-2 bg-[#F0FDF4] border border-[#16A34A]/30 rounded-xl text-sm font-semibold text-[#16A34A]">
-              ✓ Pipeline complete — Portfolio output ready
-            </motion.div>
-          )}
-        </AnimatePresence>
+      {/* ── Controls + stage banner row ── */}
+      <div className="flex items-center gap-2.5 flex-wrap">
+        <motion.button onClick={handleReset}
+          whileHover={{ scale: 1.04, y: -1 }} whileTap={{ scale: 0.95 }}
+          transition={{ type: 'spring', stiffness: 320, damping: 22 }}
+          className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-text-secondary bg-bg-card border border-border rounded-xl hover:bg-bg-card/80 transition-colors shrink-0">
+          <motion.span animate={playing ? { rotate: -360 } : { rotate: 0 }}
+            transition={playing ? { repeat: Infinity, duration: 2, ease: 'linear' } : {}}>
+            <RotateCcw size={14} />
+          </motion.span>
+          Reset
+        </motion.button>
+        <motion.button onClick={handlePlay}
+          whileHover={{ scale: 1.04, y: -1 }} whileTap={{ scale: 0.95 }}
+          transition={{ type: 'spring', stiffness: 320, damping: 22 }}
+          className={`flex items-center gap-1.5 px-4 py-2 text-sm font-semibold rounded-xl transition-all shadow-sm shrink-0 ${
+            isDone
+              ? 'bg-primary text-white hover:bg-primary/90'
+              : playing
+                ? 'bg-amber-500 text-white hover:bg-amber-400'
+                : 'bg-primary text-white hover:bg-primary/90'
+          }`}>
+          {playing ? <><Pause size={14} /> Pause</> : isDone ? <><Play size={14} /> Replay</> : <><Play size={14} /> Play</>}
+        </motion.button>
+
+        {/* Speed selector */}
+        <div className="flex items-center gap-1 bg-bg-card border border-border rounded-xl px-1 py-1 shrink-0">
+          {([['Fast', 0.8], ['Normal', 1.8], ['Slow', 3.0]] as const).map(([label, s]) => (
+            <button key={label} onClick={() => setSpeed(s)}
+              className={`text-[11px] font-medium px-2.5 py-1 rounded-lg transition-all ${
+                speed === s
+                  ? 'bg-white text-secondary shadow-sm border border-border-light'
+                  : 'text-text-muted hover:text-text'
+              }`}>
+              {label}
+            </button>
+          ))}
+        </div>
+
+        {/* Keyboard hint */}
+        <span className="text-[10px] text-text-muted hidden sm:block">
+          <kbd className="px-1.5 py-0.5 rounded bg-bg-card border border-border font-mono text-[9px]">Space</kbd> play/pause
+          · <kbd className="px-1.5 py-0.5 rounded bg-bg-card border border-border font-mono text-[9px]">Esc</kbd> reset
+        </span>
+
+        {/* Stage label / hint */}
+        <div className="flex-1 min-w-0 h-9 flex items-center">
+          <AnimatePresence mode="wait">
+            {isDone ? (
+              <motion.div key="done" initial={{ opacity: 0, y: -6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
+                className="flex items-center gap-2 px-3 py-1.5 bg-[#F0FDF4] border border-[#16A34A]/30 rounded-xl text-xs font-semibold text-[#16A34A] truncate">
+                ✓ Pipeline complete — Portfolio output ready
+              </motion.div>
+            ) : stageLabel ? (
+              <motion.div key={step}
+                initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 8 }}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-primary-subtle border border-primary/20 rounded-xl text-xs font-medium text-primary truncate">
+                <ChevronRight size={12} />
+                {stageLabel}
+              </motion.div>
+            ) : (
+              <motion.p key="hint" initial={{ opacity: 0 }} animate={{ opacity: 1 }}
+                className="text-xs text-text-muted px-1 truncate">
+                Click ▶ Play to animate the AI pipeline · or click any node to explore
+              </motion.p>
+            )}
+          </AnimatePresence>
+        </div>
       </div>
 
       {/* ── Two-column: SVG left | Info right ── */}
       <div className="grid grid-cols-[1fr_360px] gap-4 items-start">
 
         {/* ── LEFT: SVG Pipeline ── */}
-        <div className="bg-white border border-border rounded-2xl overflow-hidden">
+        <div className="bg-white border border-border rounded-xl shadow-[0_1px_3px_rgba(0,0,0,0.05)] overflow-hidden">
           <div className="p-3">
         <svg
           viewBox="0 0 900 1080"
@@ -451,10 +507,6 @@ export default function WorkflowViz() {
                 .edge-flow {
                   stroke-dasharray: 8 5;
                   animation: flowDash 1.2s linear infinite;
-                }
-                @keyframes pulse-ring {
-                  0%   { r: 0; opacity: 0.6; }
-                  100% { r: 18; opacity: 0; }
                 }
               `}</style>
             </defs>
@@ -512,16 +564,6 @@ export default function WorkflowViz() {
               return (
                 <g key={n.id} style={{ cursor: 'pointer' }}
                   onClick={() => handleNodeClick(n.id)}>
-                  {/* Pulse ring when first activated */}
-                  {isActive && (
-                    <circle cx={n.x} cy={n.y} r={n.r + 4}
-                      fill="none" stroke={n.color} strokeWidth="2" opacity="0"
-                      style={{
-                        animation: 'none',
-                        transformOrigin: `${n.x}px ${n.y}px`,
-                      }}
-                    />
-                  )}
                   {/* Glow backdrop when active */}
                   {isActive && (
                     <circle cx={n.x} cy={n.y} r={n.r + 8}
@@ -613,7 +655,7 @@ export default function WorkflowViz() {
                 animate={{ opacity: 1, x: 0 }}
                 exit={{ opacity: 0, x: 12 }}
                 transition={{ duration: 0.22 }}
-                className="bg-white border border-border rounded-2xl overflow-hidden"
+                className="bg-white border border-border rounded-xl shadow-[0_1px_3px_rgba(0,0,0,0.05)] overflow-hidden"
               >
                 {/* Color header */}
                 <div className="px-4 py-4" style={{ backgroundColor: node.color + '18', borderBottom: `2px solid ${node.color}30` }}>
@@ -664,10 +706,10 @@ export default function WorkflowViz() {
             ) : (
               <motion.div key="empty"
                 initial={{ opacity: 0 }} animate={{ opacity: 1 }}
-                className="bg-white border border-border rounded-2xl p-6 text-center"
+                className="bg-white border border-border rounded-xl shadow-[0_1px_3px_rgba(0,0,0,0.05)] p-6 text-center"
               >
-                <div className="w-14 h-14 bg-bg-card rounded-2xl flex items-center justify-center mx-auto mb-3">
-                  <Workflow size={24} className="text-text-muted" />
+                <div className="w-12 h-12 bg-bg-card rounded-xl flex items-center justify-center mx-auto mb-3">
+                  <Workflow size={22} className="text-text-muted" />
                 </div>
                 <p className="font-medium text-sm text-secondary mb-1">No component selected</p>
                 <p className="text-xs text-text-muted leading-relaxed">
@@ -678,7 +720,7 @@ export default function WorkflowViz() {
           </AnimatePresence>
 
           {/* ── Pipeline Stages ── */}
-          <div className="bg-white border border-border rounded-2xl p-4">
+          <div className="bg-white border border-border rounded-xl shadow-[0_1px_3px_rgba(0,0,0,0.05)] p-4">
             <p className="text-xs font-bold uppercase tracking-widest text-text-muted mb-3">Pipeline Stages</p>
             <div className="space-y-1">
               {PLAY_SEQUENCE.map((group, i) => (
@@ -716,7 +758,7 @@ export default function WorkflowViz() {
           </div>
 
           {/* ── Stats grid ── */}
-          <div className="bg-white border border-border rounded-2xl p-4">
+          <div className="bg-white border border-border rounded-xl shadow-[0_1px_3px_rgba(0,0,0,0.05)] p-4">
             <p className="text-xs font-bold uppercase tracking-widest text-text-muted mb-3">System Stats</p>
             <div className="grid grid-cols-2 gap-2">
               {[
@@ -742,6 +784,40 @@ export default function WorkflowViz() {
 
         </div>{/* end right col */}
       </div>{/* end grid */}
+
+      {/* ── Portfolio Integration callout ── */}
+      <div className="mt-4 rounded-xl border border-primary/20 bg-primary/[0.03] px-4 py-3">
+        <div className="flex items-start gap-3">
+          <Workflow size={15} className="text-primary shrink-0 mt-0.5" />
+          <div className="flex-1">
+            <p className="text-[11px] font-bold text-primary uppercase tracking-wide mb-1.5">How Each Tab Connects to This Pipeline</p>
+            <div className="grid grid-cols-5 gap-2 text-[10px] mb-2.5">
+              {[
+                { label: 'RL Agent', sub: 'PPO/SAC/TD3…', active: false },
+                { label: 'GNN Graph', sub: 'T-GAT · 32-dim', active: false },
+                { label: 'Sentiment', sub: 'FinBERT · RSS', active: false },
+                { label: 'Federated', sub: 'FL · DP-SGD', active: false },
+                { label: 'Portfolio', sub: 'Final output', active: true },
+              ].map(item => (
+                <div key={item.label}
+                  className={`rounded-lg border px-2 py-1.5 text-center ${
+                    item.active
+                      ? 'border-primary/30 bg-primary/8 text-primary'
+                      : 'border-border-light bg-white text-text-secondary'
+                  }`}>
+                  <p className="font-semibold leading-none mb-0.5">{item.label}</p>
+                  <p className="opacity-60">{item.sub}</p>
+                </div>
+              ))}
+            </div>
+            <p className="text-[11px] text-text-secondary">
+              Each dashboard tab shows one slice of this pipeline. The <span className="font-semibold text-text">Workflow tab</span> is
+              the only place where all 15 components and their data-flow relationships are visible together.
+              Use it to explain the end-to-end system to an interviewer or present the architecture.
+            </p>
+          </div>
+        </div>
+      </div>
     </div>
   )
 }
