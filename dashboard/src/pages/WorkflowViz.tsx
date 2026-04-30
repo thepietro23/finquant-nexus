@@ -286,7 +286,7 @@ const PAGE_INFO = {
     { heading: '1. What is this tab?', text: 'Animated, interactive diagram of the full FINQUANT-NEXUS v4 system end-to-end. Every component visible in the 8 dashboard tabs is shown here as a node. Use it to understand how data flows from raw Yahoo Finance CSVs → AI models → Smart Portfolio output.' },
     { heading: '2. Animated walkthrough', text: 'Press ▶ Play to walk through all pipeline stages in sequence. Click any stage in the right-hand list to jump directly to it, or click any node in the diagram to inspect its role and what it outputs. Speed slider controls the auto-play pace.' },
     { heading: '3. Data Sources', text: 'NIFTY 50 price history from Yahoo Finance (2015–2025, 47 stocks, stored in data/all_close_prices.csv). Live Indian news feeds (ET, BusinessStandard, LiveMint, Google News RSS) for FinBERT sentiment analysis.' },
-    { heading: '4. Feature Engineering + GNN', text: '21 technical indicators per stock (RSI, MACD, Bollinger Bands, volatility, momentum). Combined with T-GAT Graph Neural Network: nodes = 47 stocks, edges = sector + supply chain + 60-day rolling correlation. GNN outputs 32-dim embeddings that the RL agent uses as extra state features.' },
+    { heading: '4. Feature Engineering + GNN', text: '21 technical indicators per stock (RSI, MACD, Bollinger Bands, volatility, momentum). Combined with T-GAT Graph Neural Network: nodes = 45 stocks, edges = sector + supply chain + 60-day rolling correlation. GNN outputs 64-dim embeddings that the RL agent uses as extra state features.' },
     { heading: '5. 6 RL Agents (Gymnasium environment)', text: 'PPO, SAC, TD3, A2C, DDPG all train simultaneously on the same custom Gymnasium PortfolioEnv. Reward = Sharpe Ratio. Train on 2015–2021 (70%), validate on 2022–2025 (30%). Ensemble agent averages all 5 weight vectors for maximum robustness.' },
     { heading: '6. Federated Learning + Smart Portfolio output', text: 'FL trains across 4 sector clients (Banking/IT/Pharma/Energy) with FedProx + DP-SGD (ε=8.0). Global FL model → sector allocation weights (20% signal). Smart Portfolio = RL (40%) + FinBERT Sentiment (40%) + FL sector (20%) → SLSQP Max Sharpe → final weights displayed in the Portfolio tab.' },
   ],
@@ -794,7 +794,7 @@ export default function WorkflowViz() {
             <div className="grid grid-cols-5 gap-2 text-[10px] mb-2.5">
               {[
                 { label: 'RL Agent', sub: 'PPO/SAC/TD3…', active: false },
-                { label: 'GNN Graph', sub: 'T-GAT · 32-dim', active: false },
+                { label: 'GNN Graph', sub: 'T-GAT · 64-dim', active: false },
                 { label: 'Sentiment', sub: 'FinBERT · RSS', active: false },
                 { label: 'Federated', sub: 'FL · DP-SGD', active: false },
                 { label: 'Portfolio', sub: 'Final output', active: true },
