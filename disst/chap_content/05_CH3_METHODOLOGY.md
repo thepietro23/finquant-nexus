@@ -11,25 +11,25 @@
 
 ---
 
-This chapter describes the complete design and implementation of FINQUANT-NEXUS. The system has thirteen distinct components, each of which is described in its own section. The sections follow the natural data flow of the system: from raw market data collection, through feature engineering, sentiment extraction, and graph modelling, into reinforcement learning training and evaluation, stress testing, federated learning, and finally the API and dashboard that make all results accessible.
+FINQUANT-NEXUS has thirteen distinct components, each of which is described in its own section below. The sections follow the natural data flow of the system: from raw market data collection, through feature engineering, sentiment extraction, and graph modelling, into reinforcement learning training and evaluation, stress testing, federated learning, and finally the API and dashboard that make all results accessible.
 
 ---
 
 ## 3.1 Overall System Architecture
 
-FINQUANT-NEXUS is built as a pipeline system where data flows through seven processing stages before reaching the user interface. Figure 3.1 shows the overall architecture.
+FINQUANT-NEXUS is a pipeline system where data moves through seven processing stages before reaching the user interface. Figure 3.1 shows the overall architecture.
 
-The first stage is data acquisition. Historical daily price and volume data for forty-four NIFTY 50 stocks is downloaded from Yahoo Finance using the yfinance Python library. [33] Financial news from three sources (Google News RSS, Yahoo Finance News API, and Indian RSS feeds from Moneycontrol and Economic Times) is fetched concurrently by a thread-safe news fetcher.
+Data acquisition is the first stage. Historical daily price and volume data for forty-four NIFTY 50 stocks is downloaded from Yahoo Finance using the yfinance Python library. [33] Financial news from three sources, Google News RSS, Yahoo Finance News API, and Indian RSS feeds from Moneycontrol and Economic Times, is fetched concurrently by a thread-safe news fetcher.
 
-The second stage is processing. On the price side, the raw data is cleaned, adjusted for corporate actions, and passed through a feature engineering module that computes twenty-one technical indicators. On the news side, headlines are deduplicated, tokenized, and processed by a locally cached FinBERT model to produce a sentiment score per stock per day.
+Processing comes next. On the price side, raw data is cleaned, adjusted for corporate actions, and passed through a feature engineering module that computes twenty-one technical indicators. On the news side, headlines are deduplicated, tokenized, and processed by a locally cached FinBERT model to produce a sentiment score per stock per day.
 
-The third stage is graph construction and embedding. The forty-four stocks are modelled as nodes in a multi-relational graph with three types of edges. This graph is processed by the Temporal Graph Attention Network (T-GAT), which produces a thirty-two dimensional embedding vector for each stock at each time step.
+Graph construction and embedding is the third stage. The forty-four stocks are modelled as nodes in a multi-relational graph with three types of edges. This graph is processed by the Temporal Graph Attention Network (T-GAT), which produces a thirty-two dimensional embedding vector for each stock at each time step.
 
-The fourth stage is the reinforcement learning environment. The RL observation space combines the twenty-one technical indicators, the thirty-two dimensional T-GAT embeddings, the FinBERT sentiment scores, and the current portfolio weights. Five RL algorithms (PPO, SAC, TD3, A2C, DDPG) are trained in a Gymnasium-compatible environment that simulates portfolio allocation with realistic constraints. Their outputs are averaged by a meta-level Ensemble agent.
+Stage four is the reinforcement learning environment. The RL observation space combines the twenty-one technical indicators, the thirty-two dimensional T-GAT embeddings, the FinBERT sentiment scores, and the current portfolio weights. Five RL algorithms (PPO, SAC, TD3, A2C, DDPG) are trained in a Gymnasium-compatible environment that simulates portfolio allocation with realistic constraints. Their outputs are averaged by a meta-level Ensemble agent.
 
-The fifth stage is risk evaluation. A Monte Carlo stress testing module takes the portfolio weights produced by the Ensemble agent and runs one thousand simulation paths under eight historical crisis scenarios, computing VaR, CVaR, and survival rates.
+Risk evaluation is the fifth stage. A Monte Carlo stress testing module takes the portfolio weights produced by the Ensemble agent and runs one thousand simulation paths under eight historical crisis scenarios, computing VaR, CVaR, and survival rates.
 
-The sixth stage is federated learning. The T-GAT model is also trained in a federated setting where four sector clients train locally under differential privacy constraints, and a FedProx server aggregates their updates across fifty communication rounds.
+Federated learning is the sixth stage. The T-GAT model is also trained in a federated setting where four sector clients train locally under differential privacy constraints, and a FedProx server aggregates their updates across fifty communication rounds.
 
 The seventh stage is output. A FastAPI backend exposes all results through more than fifty REST endpoints. A React dashboard with eight interactive pages presents portfolio analytics, RL agent comparisons, sentiment data, graph visualisations, stress test results, federated learning convergence, the data pipeline view, and a forward simulation.
 
@@ -41,11 +41,11 @@ The technology stack is Python 3.11 on the backend (PyTorch, Stable-Baselines3, 
 
 The NIFTY 50 index represents fifty of the largest and most liquid companies listed on the National Stock Exchange of India, selected by free-float market capitalisation. [2] For this work, forty-four of the fifty constituent stocks are used. Six stocks were excluded because their complete price history was not available through the Yahoo Finance API for the full study period.
 
-Data is sourced using the yfinance library. [33] For each of the forty-four stocks, daily OHLCV data (Open, High, Low, Close, Volume) and the Adjusted Close price are downloaded for the period from January 2015 to December 2025. The Adjusted Close is the primary price series used for return computation, because it accounts for stock splits and dividend distributions. Using the raw Close price for return computation would introduce artificial jumps on ex-dividend dates, distorting the technical indicators and model inputs.
+Data is sourced using the yfinance library. [33] For each of the forty-four stocks, daily OHLCV data (Open, High, Low, Close, Volume) and the Adjusted Close price are downloaded for the period from January 2015 to December 2025. The Adjusted Close is the primary price series used for return computation, because it accounts for stock splits and dividend distributions. Using the raw Close price would introduce artificial jumps on ex-dividend dates, distorting the technical indicators and model inputs.
 
 The NIFTY 50 index itself is also downloaded as a separate series and used as the benchmark for portfolio performance comparison.
 
-The dataset is divided into three non-overlapping periods. The training set covers January 2015 to December 2021, a span of seven years that includes multiple market regimes: the 2016 demonetisation shock, the 2018 NBFC crisis, the COVID crash of March 2020, and the subsequent recovery. The validation set covers January 2022 to December 2023 and was used for hyperparameter tuning and architecture decisions. The test set covers January 2024 to December 2025 and represents completely unseen data used for final evaluation. No data from the validation or test sets was used at any stage of model training.
+The dataset is divided into three non-overlapping periods. The training set covers January 2015 to December 2021, a span of seven years that includes multiple market regimes: the 2016 demonetisation shock, the 2018 NBFC crisis, the COVID crash of March 2020, and the subsequent recovery. The validation set covers January 2022 to December 2023 and was used for hyperparameter tuning and architecture decisions. The test set covers January 2024 to December 2025 and represents completely unseen data for final evaluation. No data from the validation or test sets was used at any stage of model training.
 
 Table 3.1 shows the distribution of stocks across sectors. The sector classification follows the standard NSE sector grouping.
 
@@ -71,15 +71,15 @@ Date range: January 2015 to December 2025 (approximately 2700 trading days per s
 
 ## 3.3 Data Preprocessing
 
-Raw financial data from Yahoo Finance has several imperfections that need to be addressed before the data can be used for model training.
+Raw financial data from Yahoo Finance has several imperfections that need to be fixed before the data can go into model training.
 
-The most common issue is missing values. Indian markets observe scheduled holidays, and on those days no price data is recorded. The resulting gaps in the time series are handled by forward-filling: each missing value is replaced by the most recently observed valid price. Forward-fill is chosen over interpolation because financial prices are not smooth between market closures. Interpolating between a Friday close and a Tuesday open would imply a hypothetical price movement on Monday (a holiday) that did not actually happen.
+The most common issue is missing values. Indian markets observe scheduled holidays, and on those days no price data is recorded. The resulting gaps are handled by forward-filling: each missing value is replaced by the most recently observed valid price. Forward-fill is chosen over interpolation because financial prices are not smooth between market closures. Interpolating between a Friday close and a Tuesday open would imply a price movement on Monday (a holiday) that did not actually happen. That would introduce a signal that never existed in the actual market.
 
-Extreme price observations are checked against a threshold of five standard deviations from the rolling mean. Values beyond this threshold are examined individually. In most cases they correspond to genuine corporate events (bonus share issues, stock splits that the Adjusted Close did not fully correct) or data errors from the source. Data errors are corrected or forward-filled; genuine corporate events are retained.
+Extreme price observations are checked against a threshold of five standard deviations from the rolling mean. Values beyond this threshold are examined individually. Most correspond to genuine corporate events (bonus share issues, stock splits that the Adjusted Close did not fully correct) or data errors from the source. Data errors are corrected or forward-filled; genuine corporate events are kept.
 
-Volume data follows the same forward-fill logic for days with zero recorded volume, which typically indicates trading halts. Zero volume days are replaced by the previous day's volume.
+Volume data follows the same forward-fill logic for days with zero recorded volume, which typically indicates trading halts.
 
-After cleaning, the data is verified to be in strict chronological order with no remaining NaN values. This ordering is preserved throughout all subsequent processing steps. No shuffling of the time series is applied at any stage, because shuffling would destroy the temporal structure that both the RL environment and the T-GAT model depend on. Shuffling would also create data leakage by allowing information from future time steps to appear before past ones in the training sequence.
+After cleaning, the data is verified to be in strict chronological order with no remaining NaN values. This ordering is preserved throughout all subsequent processing steps. No shuffling of the time series is applied at any point, because shuffling would destroy the temporal structure that both the RL environment and the T-GAT model depend on. It would also create data leakage by allowing information from future time steps to appear before past ones in the training sequence.
 
 The final cleaned dataset has shape (trading days, 44, 6), representing all six price fields for all forty-four stocks across all trading days in the study period.
 
@@ -93,7 +93,7 @@ After computation, all indicators are normalised using a rolling Z-score with a 
 
     Z(t) = (X(t) - rolling_mean(X, 252)) / rolling_std(X, 252)
 
-Rolling normalisation is used to prevent data leakage. Global statistics would incorporate future data into early training points, which would not be available during deployment.
+Rolling normalisation is used to prevent data leakage. Global statistics would incorporate future data into early training points, which would not be available during actual deployment.
 
 **Table 3.2**: All 21 Technical Indicators
 
@@ -111,8 +111,8 @@ Rolling normalisation is used to prevent data leakage. Global statistics would i
 | 10 | Williams %R | Momentum | 14-period | Inverted stochastic |
 | 11 | ROC | Momentum | 10-period | Rate of price change |
 | 12 | CCI | Momentum | 20-period | Price deviation from average |
-| 13 | Bollinger Upper | Volatility | SMA(20) + 2σ | Resistance level |
-| 14 | Bollinger Lower | Volatility | SMA(20) - 2σ | Support level |
+| 13 | Bollinger Upper | Volatility | SMA(20) + 2sigma | Resistance level |
+| 14 | Bollinger Lower | Volatility | SMA(20) - 2sigma | Support level |
 | 15 | Bollinger Bandwidth | Volatility | (Upper - Lower) / Mid | Volatility magnitude |
 | 16 | ATR | Volatility | 14-period EMA of True Range | Intraday volatility |
 | 17 | Daily Return | Price | (Close_t / Close_{t-1}) - 1 | Single-day price change |
@@ -125,33 +125,33 @@ Rolling normalisation is used to prevent data leakage. Global statistics would i
 
 ## 3.5 Sentiment Analysis Module
 
-Financial news carries information that price history alone cannot provide. When a company announces quarterly results, when a sector regulator releases new guidelines, or when macroeconomic data comes out differently from what analysts expected, the market reaction often starts in news text before it appears in price movements. The sentiment module in FINQUANT-NEXUS extracts this forward-looking signal from live news and converts it into a numerical feature that the RL agents can use.
+Financial news carries information that price history alone cannot capture. When a company announces quarterly results, when a sector regulator releases new guidelines, or when macroeconomic data comes out differently from what analysts expected, the market reaction often starts in news text before it shows up in price movements. The sentiment module in FINQUANT-NEXUS extracts this forward-looking signal from live news and converts it into a numerical feature the RL agents can use.
 
-General-purpose sentiment classifiers trained on movie reviews or social media text do not transfer well to financial language. Words like "bear", "short", "correction", and "liability" have domain-specific meanings in finance that a general classifier would handle incorrectly. Loughran and McDonald showed this clearly in their 2011 paper on finance-specific lexicons. [24] The solution is a model specifically trained on financial text.
+General-purpose sentiment classifiers trained on movie reviews or social media text do not transfer well to financial language. Words like "bear", "short", "correction", and "liability" have domain-specific meanings in finance that a general classifier handles incorrectly. Loughran and McDonald showed this clearly in their 2011 paper on finance-specific lexicons. [24] The solution is a model trained on financial text.
 
 FinBERT, published by Araci in 2019 [26] and fine-tuned by ProsusAI on a large corpus of financial news and earnings call transcripts [35], is the model used here. It is based on BERT [25], which processes text bidirectionally, considering both the left and right context of each word. The ProsusAI/finbert model outputs three class probabilities: P(positive), P(neutral), and P(negative) for any input text.
 
-The model is downloaded once and stored locally at data/finbert_local/. All subsequent inference runs from this local cache, so the sentiment module does not require an internet connection during operation.
+The model is downloaded once and stored locally at data/finbert_local/. All subsequent inference runs from this local cache, so the sentiment module does not need an internet connection during operation.
 
 **News Sources.** Three sources are queried for each stock:
 
-The Google News RSS feed provides English-language headlines from a wide range of Indian and international sources. The Yahoo Finance news API provides stock-specific articles. Indian financial RSS feeds from Moneycontrol and Economic Times cover domestic market coverage that may not appear in the first two sources.
+The Google News RSS feed provides English-language headlines from a wide range of Indian and international sources. The Yahoo Finance news API provides stock-specific articles. Indian financial RSS feeds from Moneycontrol and Economic Times cover domestic market stories that may not appear in the first two sources.
 
-**Fetching Pipeline.** News fetching is implemented with Python's ThreadPoolExecutor, allowing all forty-four stocks to be queried concurrently rather than sequentially. Each individual source request has a five-second timeout to prevent a slow or unresponsive feed from blocking the entire batch. After fetching, headlines from all three sources for the same stock are deduplicated by comparing headline text. The same article appearing in multiple feeds is counted only once.
+**Fetching Pipeline.** News fetching is implemented with Python's ThreadPoolExecutor, allowing all forty-four stocks to be queried concurrently rather than one at a time. Each individual source request has a five-second timeout to prevent a slow or unresponsive feed from blocking the entire batch. After fetching, headlines from all three sources for the same stock are deduplicated by comparing headline text. The same article appearing in multiple feeds is counted only once.
 
-**Inference and Score Computation.** Each unique headline is tokenised using the FinBERT tokenizer with a maximum token length of 512. The tokenised input is passed through the FinBERT model, which outputs the three class probability values. The sentiment score for that headline is computed as:
+**Inference and Score Computation.** Each unique headline is tokenised using the FinBERT tokenizer with a maximum token length of 512. The tokenised input is passed through the FinBERT model, which outputs the three class probability values. The sentiment score for that headline is:
 
     score = P(positive) - P(negative)
 
 This gives a score in the range from minus one to plus one. A score near plus one indicates strongly positive sentiment; a score near minus one indicates strongly negative; a score near zero indicates neutral.
 
-**Daily Aggregation.** Multiple headlines may be available for the same stock on the same day. These are aggregated into a single daily score using a weighted average, where the weight of each headline is proportional to how recently it was published within the trading day. The result is one sentiment score per stock per trading day, giving a feature matrix of shape (trading days, 44).
+**Daily Aggregation.** Multiple headlines may be available for the same stock on the same day. These are aggregated into a single daily score using a weighted average, where each headline's weight is proportional to how recently it was published within the trading day. The result is one sentiment score per stock per trading day, giving a feature matrix of shape (trading days, 44).
 
 Market mood is computed as the unweighted average of all forty-four stock scores for a given day. If this average exceeds 0.2, the overall market mood is classified as Bullish. If it falls below minus 0.2, it is Bearish. Values in between are Neutral.
 
-**Caching.** Sentiment inference for forty-four stocks takes approximately fifteen to thirty seconds per full batch. To avoid calling the model repeatedly for dashboard refreshes, results are stored in a SQLite database with a time-to-live (TTL) of three minutes. If a dashboard request arrives within three minutes of the last computation, the cached result is returned immediately. If the cache has expired, fresh inference is triggered.
+**Caching.** Sentiment inference for forty-four stocks takes roughly fifteen to thirty seconds per full batch on the CPU build. To avoid calling the model repeatedly for every dashboard refresh, results are stored in a SQLite database with a time-to-live (TTL) of three minutes. If a dashboard request arrives within three minutes of the last computation, the cached result is returned immediately. If the cache has expired, fresh inference is triggered.
 
-**Integration into RL Observation Space.** The daily sentiment scores for all forty-four stocks form a forty-four dimensional feature vector. This vector is concatenated with the technical indicators and T-GAT embeddings to form the full RL observation.
+**Integration into RL Observation Space.** The daily sentiment scores for all forty-four stocks form a forty-four dimensional feature vector. This is concatenated with the technical indicators and T-GAT embeddings to form the full RL observation.
 
 Figure 3.4 (see fqn1/disst/imgs/fig_3_4_sentiment_pipeline.png) shows the complete flow from news sources through inference to the RL observation space.
 
@@ -159,11 +159,11 @@ Figure 3.4 (see fqn1/disst/imgs/fig_3_4_sentiment_pipeline.png) shows the comple
 
 ## 3.6 Stock Relationship Graph Construction
 
-Individual stock models treat each company as an independent series. But companies within the same sector respond to the same regulatory changes, and companies linked by supply chains have economically meaningful dependencies. Modelling these relationships explicitly, rather than expecting the RL agent to infer them from correlated price histories, gives the system additional structural information that is stable and interpretable.
+Individual stock models treat each company as an independent series. But companies within the same sector respond to the same regulatory changes, and companies linked by supply chains have economically meaningful dependencies. Modelling these relationships explicitly, rather than expecting the RL agent to infer them from correlated price histories alone, gives the system structural information that is stable and interpretable.
 
 The stock universe is represented as a graph G = (V, E), where V is the set of forty-four stock nodes and E is the set of edges. Three types of edges are used, each capturing a different kind of relationship.
 
-**Sector Edges.** Two stocks are connected by a sector edge if they belong to the same NSE sector classification. These edges are undirected, static, and do not change over the study period. The rationale is that sector-level events affect all companies in that sector simultaneously. When the Reserve Bank of India changes the repo rate, it affects every Indian bank. When crude oil prices change sharply, all energy-sector stocks respond. Sector edges encode this group membership in the graph structure. The graph has 79 sector edges across the eleven sector categories represented in the dataset.
+**Sector Edges.** Two stocks are connected by a sector edge if they belong to the same NSE sector classification. These edges are undirected, static, and do not change over the study period. The rationale is that sector-level events affect all companies in that sector simultaneously. When the Reserve Bank of India changes the repo rate, it affects every Indian bank. When crude oil prices move sharply, all energy-sector stocks respond. Sector edges encode this group membership in the graph structure. The graph has 79 sector edges across the eleven sector categories represented in the dataset.
 
 **Supply Chain Edges.** A second set of edges encodes known business dependency relationships between companies in different sectors. These were defined manually based on publicly available information about major supplier and customer relationships among NIFTY 50 companies. Examples include TATASTEEL to MARUTI (steel as input to automotive manufacturing) and ONGC to RELIANCE (crude oil supply). These edges are directed and static, reflecting that the dependency has a direction: a cost change upstream propagates to margins downstream, not the reverse. The graph has 24 supply chain edges.
 
@@ -188,12 +188,12 @@ Figure 3.5 (see fqn1/disst/imgs/fig_4_6_graph_all_edges.png) shows the force-dir
 
 ## 3.7 Temporal Graph Attention Network (T-GAT)
 
-The T-GAT model consists of two components: a RelationalGATLayer that applies edge-type-specific attention, and a GRU Temporal Encoder that captures how stock representations evolve over time.
+The T-GAT model has two components: a RelationalGATLayer that applies edge-type-specific attention, and a GRU Temporal Encoder that captures how stock representations evolve over time.
 
 **RelationalGATLayer.** Separate weight matrices are used for each of the three edge types. For node i and neighbour j connected by an edge of type r (sector, supply_chain, or correlation):
 
-    alpha_ij^r = softmax_j [ LeakyReLU( a_r^T [W_r·h_i || W_r·h_j] ) ]
-    h'_i^r = sigma( sum_j alpha_ij^r × W_r × h_j )
+    alpha_ij^r = softmax_j [ LeakyReLU( a_r^T [W_r*h_i || W_r*h_j] ) ]
+    h'_i^r = sigma( sum_j alpha_ij^r * W_r * h_j )
 
 The final node representation concatenates contributions from all three edge types:
 
@@ -203,7 +203,7 @@ Eight attention heads are used per edge type; their outputs are averaged before 
 
 **GRU Temporal Encoder.** A two-layer GRU with hidden size 128 processes the daily sequence of GAT outputs for each stock. The output is projected to a 32-dimensional embedding per stock per time step.
 
-**Training.** The T-GAT is pre-trained on the 2015–2021 training set with binary cross-entropy loss on next-day return direction (Adam, lr=0.001). After pre-training, the 32-dimensional embeddings are extracted and stored for use as RL observation features. T-GAT weights are frozen during RL training.
+**Training.** The T-GAT is pre-trained on the 2015 to 2021 training set with binary cross-entropy loss on next-day return direction (Adam, lr=0.001). After pre-training, the 32-dimensional embeddings are extracted and stored for use as RL observation features. T-GAT weights are frozen during RL training.
 
 Figure 3.6 (see fqn1/disst/imgs/fig_3_6_tgat.png) shows the T-GAT architecture.
 
@@ -211,7 +211,7 @@ Figure 3.6 (see fqn1/disst/imgs/fig_3_6_tgat.png) shows the T-GAT architecture.
 
 ## 3.8 Reinforcement Learning Environment
 
-Portfolio allocation is naturally a sequential decision problem. At each trading day, the agent observes the current state of the market and the portfolio, decides how to allocate capital across stocks, observes the result of that allocation over the next day, and then faces the same decision again. This loop, repeated over hundreds of trading days, is exactly what reinforcement learning is designed for.
+Portfolio allocation is naturally a sequential decision problem. At each trading day, the agent observes the current state of the market and the portfolio, decides how to allocate capital across stocks, observes the result of that allocation over the next day, and then faces the same decision again. This loop, repeated over hundreds of trading days, is what reinforcement learning is designed for.
 
 The environment in this work implements the Gymnasium interface [36] (the actively maintained successor to OpenAI Gym). Following this interface ensures compatibility with the Stable-Baselines3 [18] implementations of all five RL algorithms used in this work.
 
@@ -221,19 +221,19 @@ The technical indicator matrix contains twenty-one features for each of the fort
 
 The total observation size is 924 + 1408 + 44 + 44 = 2420. All values are normalised to the range minus one to plus one before being passed to the agent.
 
-**Action Space.** The agent outputs a continuous vector of forty-four values, one for each stock. The raw output of the agent network is passed through a softmax function to convert it into a valid probability distribution:
+**Action Space.** The agent outputs a continuous vector of forty-four values, one for each stock. The raw output is passed through a softmax function to convert it into a valid probability distribution:
 
     w_i = exp(a_i) / sum over j of exp(a_j)
 
-This ensures all weights are non-negative and sum to exactly 1.0, which is the basic requirement for a fully invested long-only portfolio. Short selling is not permitted.
+This ensures all weights are non-negative and sum to exactly 1.0. Short selling is not permitted.
 
 **Reward Function.** The reward signal is designed to encourage the agent to achieve a high Sharpe ratio while penalising excessive drawdown and unnecessary portfolio turnover:
 
-    R(t) = Sharpe_rolling_30 - lambda_1 × drawdown_penalty(t) - lambda_2 × turnover_penalty(t)
+    R(t) = Sharpe_rolling_30 - lambda_1 * drawdown_penalty(t) - lambda_2 * turnover_penalty(t)
 
 The rolling Sharpe is computed over the most recent thirty trading days. The drawdown penalty is activated when the portfolio's peak-to-trough drawdown exceeds eight percent. The turnover penalty is proportional to the total absolute change in portfolio weights between consecutive steps, discouraging the agent from rebalancing excessively and incurring unnecessary transaction costs. The penalty weights are lambda_1 = 0.5 and lambda_2 = 0.3, tuned on the validation set.
 
-The Sharpe ratio is chosen as the primary reward component rather than raw return because it accounts for the risk taken to achieve that return. An agent optimising for raw return alone would tend to take concentrated positions with high volatility. Using Sharpe penalises this behaviour.
+The Sharpe ratio is the primary reward component rather than raw return because it accounts for the risk taken to achieve that return. An agent optimising for raw return alone would take concentrated positions with high volatility. Using Sharpe penalises this behaviour.
 
 **Constraints.** Three hard constraints are enforced at every step:
 
@@ -241,9 +241,9 @@ A maximum position size of twelve percent per stock prevents excessive concentra
 
 A stop-loss rule reduces a stock's weight by fifty percent in the next step if its single-day return falls below minus three percent. This models the risk management behaviour of a professional fund manager.
 
-A maximum portfolio drawdown of minus twelve percent terminates the current episode early. This prevents the agent from learning in episodes where the portfolio has already suffered a catastrophic loss, which would distort the reward signal.
+A maximum portfolio drawdown of minus twelve percent terminates the current episode early. This prevents the agent from training in episodes where the portfolio has already suffered a catastrophic loss, which would distort the reward signal.
 
-**Episode Structure.** Each episode covers 252 trading days (one calendar year). The starting date is drawn randomly from the training period (2015 to 2021) at the beginning of each episode, which exposes the agent to diverse market conditions during training. A transaction cost of 0.1% per trade and market slippage of 0.05% are deducted from portfolio returns at each rebalancing step.
+**Episode Structure.** Each episode covers 252 trading days (one calendar year). The starting date is drawn randomly from the training period (2015 to 2021) at the beginning of each episode, exposing the agent to diverse market conditions during training. A transaction cost of 0.1% per trade and market slippage of 0.05% are deducted from portfolio returns at each rebalancing step.
 
 Figure 3.7 (see fqn1/disst/imgs/fig_3_7_rl_env.png) shows the state-action-reward cycle of the environment.
 
@@ -251,15 +251,15 @@ Figure 3.7 (see fqn1/disst/imgs/fig_3_7_rl_env.png) shows the state-action-rewar
 
 ## 3.9 Reinforcement Learning Agents
 
-Five RL algorithms are trained in the environment described in Section 3.8. PPO [13] and A2C [16] are on-policy algorithms that update using data from the current policy; SAC [14], TD3 [15], and DDPG [12] are off-policy algorithms that learn from a replay buffer. The algorithmic details of each are covered in Chapter 2. The key design difference in this work is that all five share the same observation space, action space, and risk constraints, enabling a direct performance comparison on identical data.
+Five RL algorithms are trained in the environment described in Section 3.8. PPO [13] and A2C [16] are on-policy algorithms that update using data from the current policy; SAC [14], TD3 [15], and DDPG [12] are off-policy algorithms that learn from a replay buffer. The algorithmic details of each are covered in Chapter 2. The key design choice in this work is that all five share the same observation space, action space, and risk constraints, enabling a direct performance comparison on identical data.
 
 **Ensemble Agent.** A sixth agent averages the weight outputs of all five:
 
     a_ensemble = (a_PPO + a_SAC + a_TD3 + a_A2C + a_DDPG) / 5
 
-Softmax normalisation is applied to produce the final portfolio weights. No additional training is required. The averaging reduces sensitivity to any single algorithm's worst-case behavior across market conditions.
+Softmax normalisation is applied to produce the final portfolio weights. No additional training is required. The averaging reduces sensitivity to any single algorithm's worst-case behaviour across market conditions.
 
-**Training Protocol.** All five algorithms are trained for 500,000 steps on the 2015–2021 training data. Discount factor gamma = 0.99. Adam optimizer, learning rate 3×10⁻⁴. Batch size 64 for on-policy methods, 256 for off-policy. All implementations use Stable-Baselines3 v2.8.0 with custom environment wrappers.
+**Training Protocol.** All five algorithms are trained for 500,000 steps on the 2015 to 2021 training data. Discount factor gamma = 0.99. Adam optimizer, learning rate 3x10^-4. Batch size 64 for on-policy methods, 256 for off-policy. All implementations use Stable-Baselines3 v2.8.0 with custom environment wrappers.
 
 **Table 3.3**: RL Algorithm Hyperparameters
 
@@ -280,9 +280,9 @@ Softmax normalisation is applied to produce the final portfolio weights. No addi
 
 ## 3.10 Stress Testing Framework
 
-Backtesting on historical data tells us how a portfolio would have performed during the specific sequence of events that actually occurred. Stress testing answers a different question: how does the portfolio behave under market conditions that are more extreme or more volatile than what was observed in the test period?
+Backtesting on historical data tells how a portfolio would have performed during the specific sequence of events that actually occurred. Stress testing answers a different question: how does the portfolio behave under market conditions that are more extreme or more volatile than what was observed in the test period?
 
-The stress testing module in FINQUANT-NEXUS uses Monte Carlo simulation. For each of eight crisis scenarios, one thousand independent forward price paths are generated. Each path covers 252 trading days. The Ensemble RL agent's portfolio weights (as computed on the most recent observation from the test set) are held fixed across all paths in a given scenario.
+The stress testing module uses Monte Carlo simulation. For each of eight crisis scenarios, one thousand independent forward price paths are generated. Each path covers 252 trading days. The Ensemble RL agent's portfolio weights (computed on the most recent observation from the test set) are held fixed across all paths in a given scenario.
 
 The eight scenarios, each calibrated to a historical crisis period, are: Normal (baseline), 2008 Financial Crisis, COVID-19 Crash, Flash Crash, Dot-Com 2000, India Bear 2015, Rate Hike 2022, and Geo-Political Shock. Each applies volatility parameters from the corresponding historical period rather than long-run averages.
 
@@ -292,15 +292,15 @@ Value at Risk at the 95th percentile (VaR 95%) is the return that is not exceede
 
 Conditional Value at Risk at the 95th percentile (CVaR 95%), also called Expected Shortfall, is the average return across the worst 5% of paths. This is more informative than VaR alone because it characterises the severity of tail losses, not just the threshold. [7]
 
-The survival rate is the percentage of paths in which the portfolio's drawdown stays within the maximum drawdown constraint of minus twelve percent. This metric is directly interpretable for fund managers: it is the probability that the portfolio survives the scenario without hitting its circuit breaker.
+The survival rate is the percentage of paths in which the portfolio's drawdown stays within the maximum drawdown constraint of minus twelve percent. This metric is directly interpretable: it is the probability that the portfolio survives the scenario without hitting its circuit breaker.
 
 ---
 
 ## 3.11 Federated Learning System
 
-The motivation for federated learning in this context is practical. Sector-specific portfolio data is sensitive. A banking fund's allocation across HDFCBANK, ICICIBANK, and KOTAKBANK reflects proprietary investment decisions. An energy fund's positions in RELIANCE, ONGC, and NTPC reflect months of research and risk assessment. Neither fund would share this data with a central server, and regulatory constraints on sharing client portfolio information make centralised training infeasible in real institutional settings.
+The motivation for federated learning here is practical. Sector-specific portfolio data is sensitive. A banking fund's allocation across HDFCBANK, ICICIBANK, and KOTAKBANK reflects proprietary investment decisions. An energy fund's positions in RELIANCE, ONGC, and NTPC reflect months of research and risk assessment. Neither fund would share this data with a central server, and regulatory constraints on sharing client portfolio information make centralised training infeasible in real institutional settings.
 
-Federated learning allows each sector participant to train a local model on their own data and share only the model weight updates. The central server never sees the raw data of any client.
+Federated learning lets each sector participant train a local model on their own data and share only the model weight updates. The central server never sees the raw data of any client.
 
 **Client Architecture.** Four sector clients participate in the federated training:
 
@@ -312,25 +312,25 @@ Client 3 (Pharma and FMCG) holds eight stocks: SUNPHARMA, DRREDDY, DIVISLAB, CIP
 
 Client 4 (Energy, Auto, and Others) holds twenty stocks covering the energy, automotive, metals, infrastructure, and conglomerate categories. This client represents 45% of the portfolio by stock count.
 
-**Local Training.** In each communication round, each client receives the current global model weights from the server. It then trains locally for five epochs on its own sector data. Only the weight updates (the difference between the locally trained weights and the received global weights) are computed and sent to the server. The raw training data never leaves the client.
+**Local Training.** In each communication round, each client receives the current global model weights from the server. It trains locally for five epochs on its own sector data. Only the weight updates (the difference between the locally trained weights and the received global weights) are computed and sent to the server. The raw training data never leaves the client.
 
-**DP-SGD (Differential Privacy).** Before sending weight updates to the server, each client applies DP-SGD noise. [30] The mechanism clips each gradient to a maximum L2 norm of 1.0 to prevent any single data sample from having an outsized influence on the update:
+**DP-SGD (Differential Privacy).** Before sending weight updates to the server, each client applies DP-SGD noise. [30] The mechanism clips each gradient to a maximum L2 norm of 1.0 to prevent any single data sample from having too large an influence on the update:
 
-    g_clipped = g × min(1, C / ||g||_2)
+    g_clipped = g * min(1, C / ||g||_2)
 
 Calibrated Gaussian noise is then added:
 
-    g_noisy = g_clipped + N(0, sigma^2 × I)
+    g_noisy = g_clipped + N(0, sigma^2 * I)
 
-The noise standard deviation sigma is set to achieve a privacy budget of epsilon = 8.0 with delta = 0.00001 across 50 communication rounds. This means that the probability of identifying any individual stock's data from all the shared updates is bounded by a function of epsilon. The choice of epsilon = 8.0 is a deliberate balance: stricter privacy (smaller epsilon) would require more noise, degrading model quality noticeably.
+The noise standard deviation sigma is set to achieve a privacy budget of epsilon = 8.0 with delta = 0.00001 across 50 communication rounds. The choice of epsilon = 8.0 is a deliberate balance: stricter privacy (smaller epsilon) requires more noise, which degrades model quality noticeably.
 
-**FedProx Server Aggregation.** Standard FedAvg aggregation computes a weighted average of client model weights proportional to each client's data size. [28] This works well when client data is similarly distributed, but the four sector clients have very different return distributions, volatility patterns, and factor exposures. Under FedAvg, the client with the most data or the highest loss gradient dominates the aggregated model.
+**FedProx Server Aggregation.** Standard FedAvg aggregation computes a weighted average of client model weights proportional to each client's data size. [28] This works well when client data is similarly distributed, but the four sector clients have very different return distributions, volatility patterns, and factor exposures. Under FedAvg, the client with the most data or the highest loss gradient tends to dominate the aggregated model.
 
 FedProx [29] addresses this by adding a proximal term to each client's local optimisation objective:
 
-    minimize F_k(w) + (mu / 2) × ||w - w_global||^2
+    minimize F_k(w) + (mu / 2) * ||w - w_global||^2
 
-The proximal term penalises the local model for deviating too far from the global model during local training. With mu = 0.01, client models are regularised toward the global model at each step, preventing any single sector from dominating the global update. The convergence chart in the dashboard (Figure 3.8, see fqn1/disst/imgs/fig_4_8_federated.png) shows that FedProx converges faster and more smoothly than FedAvg on this heterogeneous sector data.
+The proximal term penalises the local model for moving too far from the global model during local training. With mu = 0.01, client models are regularised toward the global model at each step, preventing any single sector from dominating the global update. The convergence chart in the dashboard (Figure 3.8, see fqn1/disst/imgs/fig_4_8_federated.png) shows that FedProx converges faster and more smoothly than FedAvg on this heterogeneous sector data.
 
 **Communication Rounds.** The full federated training runs for 50 rounds. In each round: the server broadcasts the current global model weights to all four clients; each client trains locally for five epochs under DP-SGD; each client sends its noisy weight updates back to the server; the server applies FedProx aggregation to produce the updated global model. The global Sharpe ratio of the aggregated model is tracked across rounds. After 50 rounds, the system reaches a converged state (marked CONVERGED in the dashboard) with a Global Sharpe of 0.729.
 
@@ -340,7 +340,7 @@ The global FL model's sector allocation weights are used as one of three signals
 
 ## 3.12 REST API Design
 
-The FastAPI backend [37] serves as the bridge between all Python-based backend components (data pipeline, RL models, T-GAT, sentiment, FL system, stress testing) and the React frontend. FastAPI is chosen because it provides automatic request validation through Pydantic models, generates interactive API documentation at /docs automatically, and supports asynchronous request handling, which is important for long-running calls like live sentiment inference.
+The FastAPI backend [37] bridges all Python-based backend components (data pipeline, RL models, T-GAT, sentiment, FL system, stress testing) with the React frontend. FastAPI is chosen because it provides automatic request validation through Pydantic models, generates interactive API documentation at /docs automatically, and supports asynchronous request handling, which is important for long-running calls like live sentiment inference.
 
 CORS middleware is configured to allow requests from the React development server at localhost:3000 to the FastAPI server at localhost:8000.
 
