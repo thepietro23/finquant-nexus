@@ -4,7 +4,12 @@
       "Bash(python -c ' *)",
       "Bash(python md_to_docx.py)",
       "Bash(pip install *)",
-      "Bash(python -c \"from lxml import etree; print\\('lxml ready'\\)\")"
+      "Bash(python -c \"from lxml import etree; print\\('lxml ready'\\)\")",
+      "Bash(tasklist)",
+      "Bash(python disst/md_to_docx.py)",
+      "Bash(taskkill /PID 9240 /F)",
+      "Bash(taskkill /PID 9140 /F)",
+      "Bash(taskkill /PID 11864 /F)"
     ]
   }
 }

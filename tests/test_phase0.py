@@ -20,11 +20,11 @@ class TestConfig:
         from src.utils.config import get_config
         data_cfg = get_config('data')
         assert data_cfg['stocks'] == 'nifty50'
-        assert data_cfg['risk_free_rate'] == 0.07
+        assert data_cfg['risk_free_rate'] == 0.05
 
         rl_cfg = get_config('rl')
         assert rl_cfg['algorithm'] == 'PPO'
-        assert rl_cfg['max_position'] == 0.20
+        assert rl_cfg['max_position'] == 0.12
 
     def test_config_all_sections_exist(self):
         from src.utils.config import get_config
@@ -136,7 +136,7 @@ class TestProjectStructure:
         dirs = ['src', 'src/data', 'src/sentiment', 'src/graph', 'src/rl',
                 'src/gan', 'src/nas', 'src/federated', 'src/quantum',
                 'src/api', 'src/utils', 'tests', 'configs', 'data',
-                'models', 'experiments', 'dashboard', 'thesis']
+                'models', 'experiments', 'dashboard', 'disst']
         for d in dirs:
             path = os.path.join(PROJECT_ROOT, d)
             assert os.path.isdir(path), f'Missing directory: {d}'

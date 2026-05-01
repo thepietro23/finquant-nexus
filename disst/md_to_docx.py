@@ -360,8 +360,20 @@ def md_to_docx(md_path: Path, docx_path: Path):
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 print(f"\nConverting {len(MD_FILES)} files to {DST}\n")
+ok_count = 0
+skipped = []
 for md in MD_FILES:
     docx_name = md.stem + ".docx"
-    md_to_docx(md, DST / docx_name)
+    try:
+        md_to_docx(md, DST / docx_name)
+        ok_count += 1
+    except PermissionError:
+        print(f"  SKIP {docx_name} (file is open in MS Word)")
+        skipped.append(docx_name)
+    except Exception as e:
+        print(f"  FAIL {docx_name}: {e}")
+        skipped.append(docx_name)
 
-print(f"\nDone — {len(MD_FILES)} files written to dt_docs/")
+print(f"\nDone — {ok_count} of {len(MD_FILES)} files written to dt_docs/")
+if skipped:
+    print(f"Skipped: {', '.join(skipped)}")

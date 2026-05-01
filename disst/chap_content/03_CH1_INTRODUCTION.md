@@ -57,7 +57,7 @@ The specific gap is this. No available system, open or commercial, integrates al
 
 The work was structured around seven objectives. Each one corresponds to a specific module in the FINQUANT-NEXUS system:
 
-1. To collect and preprocess ten years of daily price and volume data for forty-four NIFTY 50 constituent stocks (January 2015 to December 2025) using the Yahoo Finance API, and compute twenty-one technical indicators as the primary input feature set.
+1. To collect and preprocess approximately eleven years of daily price and volume data for forty-four NIFTY 50 constituent stocks (January 2015 to December 2025) using the Yahoo Finance API, and compute twenty-one technical indicators as the primary input feature set.
 
 2. To build a news sentiment pipeline using the ProsusAI FinBERT model that produces a daily sentiment score in the range of minus one to plus one for each stock, with SQLite-based caching to support live dashboard updates.
 

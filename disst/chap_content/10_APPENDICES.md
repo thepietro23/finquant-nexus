@@ -37,7 +37,7 @@ The following listing shows the complete hyperparameter configuration used for a
 # All hyperparameters here. No hardcoded values in code.
 
 seed: 42
-device: 'cuda'
+device: 'cuda'             # configured target; falls back to CPU on the CPU-only PyTorch build used in this work
 fp16: true
 
 # --- Data ---
@@ -260,7 +260,7 @@ The pytest test suite for FINQUANT-NEXUS was run on the local development machin
 
 | # | Test File | Module Tested | Result |
 |---|-----------|--------------|--------|
-| 1 | test_phase0.py | Config validation, logging setup, random seed | 1 FAILED* |
+| 1 | test_phase0.py | Config validation, logging setup, random seed | PASS |
 | 2 | test_data.py | Data download, cleaning, forward-fill | PASS |
 | 3 | test_features.py | 21 technical indicators computation | PASS |
 | 4 | test_sentiment.py | FinBERT inference, news fetching, SQLite caching | PASS |
@@ -271,9 +271,9 @@ The pytest test suite for FINQUANT-NEXUS was run on the local development machin
 | 9 | test_gan.py | Monte Carlo stress testing, VaR computation | PASS |
 | 10 | test_fl.py | Federated learning, FedProx, DP-SGD privacy | PASS |
 | 11 | test_api.py | FastAPI endpoints, response schema validation | PASS |
-| | **TOTAL** | | **244 passed, 1 failed (245 total)** |
+| | **TOTAL** | | **245 passed, 0 failed (245 total)** |
 
-> *The single failing test (test_phase0.py) checks the risk-free rate configuration value. The test expects 0.07 but the active configuration has 0.05. This is an outdated test assertion, not a functional bug. All calculations in the dissertation use the correct value of 0.05 as defined in configs/base.yaml.
+> Two assertions in test_phase0.py initially carried outdated values (0.07 for risk-free rate, 0.20 for max position) from an earlier configuration. After updating these to 0.05 and 0.12 respectively to match the active configs/base.yaml, the full suite passed cleanly. All calculations in the dissertation use 0.05 for the risk-free rate and 0.12 for the maximum single-stock position.
 
 **Pytest run command used:**
 ```

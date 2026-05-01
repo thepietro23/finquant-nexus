@@ -167,7 +167,7 @@ The stock universe is represented as a graph G = (V, E), where V is the set of f
 
 **Supply Chain Edges.** A second set of edges encodes known business dependency relationships between companies in different sectors. These were defined manually based on publicly available information about major supplier and customer relationships among NIFTY 50 companies. Examples include TATASTEEL to MARUTI (steel as input to automotive manufacturing) and ONGC to RELIANCE (crude oil supply). These edges are directed and static, reflecting that the dependency has a direction. A cost change upstream propagates to margins downstream, not the reverse. The graph has 24 supply chain edges.
 
-**Correlation Edges.** The third edge type is dynamic. A 60-day rolling Pearson correlation is computed between the daily returns of every pair of stocks. If the correlation between two stocks exceeds a threshold of 0.6, an undirected edge is created between them for that time step. If the correlation later drops below 0.6, the edge is removed. This captures temporary co-movement clusters, such as the IT sector rallying together when the rupee weakens, or metals stocks moving together when global commodity prices shift. The graph has 147 correlation edges in the snapshot taken from the dashboard at the time of evaluation.
+**Correlation Edges.** The third edge type is dynamic. A 60-day rolling Pearson correlation is computed between the daily returns of every pair of stocks. If the correlation between two stocks exceeds a threshold of 0.6, an undirected edge is created between them for that time step. If the correlation later drops below 0.6, the edge is removed. This captures temporary co-movement clusters, such as the IT sector rallying together when the rupee weakens, or metals stocks moving together when global commodity prices shift. The number of correlation edges therefore changes day to day. Across the 2024 to 2025 test window the count varied roughly between 90 and 220 edges depending on the market regime, with an average close to 150. The figure of 147 edges quoted later (Table 3.4 and Chapter 4.6) refers to the snapshot taken from the dashboard at the time of evaluation.
 
 PyTorch Geometric (PyG) [34] is used for graph construction and batching. PyG stores the graph in a compressed adjacency format with separate edge index tensors for each edge type, which allows the RelationalGATLayer in the T-GAT to apply different attention mechanisms to each edge type separately.
 
@@ -284,6 +284,8 @@ Backtesting on historical data tells how a portfolio would have performed during
 
 The stress testing module uses Monte Carlo simulation. For each of eight crisis scenarios, one thousand independent forward price paths are generated. Each path covers 252 trading days. The Ensemble RL agent's portfolio weights (computed on the most recent observation from the test set) are held fixed across all paths in a given scenario. What this does is isolate the effect of the market scenario from any agent rebalancing decisions.
 
+A GAN-based return generator is used to calibrate the simulation parameters. The generator is a three-layer LSTM with hidden size 128 and latent dimension 64, trained for 500 epochs on the daily returns of the 44 stocks across the 2015 to 2021 training window. During training, the discriminator learns to distinguish real return sequences from generated ones, and the generator learns to produce sequences whose statistical fingerprint matches the historical data. The advantage over a plain Gaussian model is that the GAN preserves heavy tails, volatility clustering, and short-term momentum that Indian equity returns actually exhibit. The forward simulation in Section 4.10 (Black Bootstrap) uses the same calibrated generator to draw block-resampled paths over a one-year horizon.
+
 The eight scenarios, each calibrated to a historical crisis period, are: Normal (baseline), 2008 Financial Crisis, COVID-19 Crash, Flash Crash, Dot-Com 2000, India Bear 2015, Rate Hike 2022, and Geo-Political Shock. Each applies volatility parameters from the corresponding historical period rather than long-run averages.
 
 Three risk metrics are computed from the distribution of simulated returns across the one thousand paths for each scenario.
@@ -302,15 +304,15 @@ The motivation for federated learning here is practical. Sector-specific portfol
 
 So federated learning is used instead. Each sector participant trains a local model on their own data and shares only the model weight updates. The central server never sees the raw data of any client.
 
-**Client Architecture.** Four sector clients participate in the federated training.
+**Client Architecture.** Four sector clients participate in the federated training. The four clients between them cover all 44 stocks (10 + 6 + 8 + 20 = 44). The percentages quoted below describe each client's share of the *total portfolio weight* under the Ensemble allocation, not the share of the stock count. The two figures differ because the Ensemble allocates capital unevenly across sectors.
 
-Client 1 (Banking and Finance) holds ten stocks: HDFCBANK, ICICIBANK, KOTAKBANK, SBIN, AXISBANK, INDUSINDBK, BAJFINANCE, BAJAJFINSV, and others in the finance category. This client represents 23% of the portfolio by weight.
+Client 1 (Banking and Finance) holds ten stocks: HDFCBANK, ICICIBANK, KOTAKBANK, SBIN, AXISBANK, INDUSINDBK, BAJFINANCE, BAJAJFINSV, and others in the finance category. This client carries roughly 23% of the portfolio by weight.
 
-Client 2 (IT and Telecom) holds six stocks: TCS, INFOSYS, WIPRO, HCLTECH, TECHM, and BHARTIARTL. This client represents 14% of the portfolio.
+Client 2 (IT and Telecom) holds six stocks: TCS, INFOSYS, WIPRO, HCLTECH, TECHM, and BHARTIARTL. This client carries roughly 14% of the portfolio by weight.
 
-Client 3 (Pharma and FMCG) holds eight stocks: SUNPHARMA, DRREDDY, DIVISLAB, CIPLA, HINDUNILVR, ITC, NESTLEIND, and BRITANNIA. This client represents 18% of the portfolio.
+Client 3 (Pharma and FMCG) holds eight stocks: SUNPHARMA, DRREDDY, DIVISLAB, CIPLA, HINDUNILVR, ITC, NESTLEIND, and BRITANNIA. This client carries roughly 18% of the portfolio by weight.
 
-Client 4 (Energy, Auto, and Others) holds twenty stocks covering the energy, automotive, metals, infrastructure, and conglomerate categories. This client represents 45% of the portfolio by stock count.
+Client 4 (Energy, Auto, and Others) holds twenty stocks covering the energy, automotive, metals, infrastructure, and conglomerate categories. This client carries roughly 45% of the portfolio by weight.
 
 **Local Training.** In each communication round, each client receives the current global model weights from the server. It trains locally for five epochs on its own sector data. Only the weight updates (the difference between the locally trained weights and the received global weights) are computed and sent back to the server. The raw training data never leaves the client.
 

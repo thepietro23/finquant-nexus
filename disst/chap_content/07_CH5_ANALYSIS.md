@@ -124,7 +124,7 @@ Going by the numbers, the per-algorithm ranking in the forward simulation differ
 - **Federated learning locally simulated.** All four clients run on one machine with logically separated data. Real distributed FL would face network latency, client dropout, and adversarial client risks not modelled here.
 - **Static supply chain graph.** The 24 supply chain edges were defined manually and do not update when business relationships change. Only the 147 correlation edges are dynamic (60-day rolling).
 - **epsilon = 8.0 is on the higher end of DP settings.** Chosen to complete 50 rounds within the privacy budget. Institutional deployment with sensitive data would require a stricter budget.
-- **Training data ends December 2021.** Post-2021 market evolution (increased retail participation, NIFTY 50 composition changes) is not covered in the training set. Positive 2024 to 2025 test results suggest reasonable generalisation, but this cannot be guaranteed indefinitely.
+- **Training split ends December 2021.** The full dataset extends to December 2025, but only the 2015 to 2021 window was used for RL policy training. Validation (2022 to 2023) and test (2024 to 2025) data was never seen during training. Post-2021 market evolution (increased retail participation, NIFTY 50 composition changes) was therefore tested against rather than trained on. Positive 2024 to 2025 test results suggest reasonable generalisation, but this cannot be guaranteed indefinitely.
 
 ---
 
