@@ -3,20 +3,36 @@ Convert all dissertation MD files → DOCX with RRU formatting.
 Output folder: fqn1/disst/dt_docs/
 Font: Times New Roman | Body: 12pt | H1: 14pt Bold | H2: 12pt Bold
 Margins: Left 38mm, Right/Top/Bottom 25.4mm | Line spacing: 1.5
+Equations: native Word OMML objects (inline, no external file)
 """
 
-import os
 import re
+from lxml import etree
 from pathlib import Path
 from docx import Document
 from docx.shared import Pt, Mm, RGBColor
 from docx.enum.text import WD_LINE_SPACING, WD_ALIGN_PARAGRAPH
 from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
-import copy
 
-SRC = Path(r"e:\Sem4\Clg_Project\finquant-nexus\disst\chap_content")
-DST = Path(r"e:\Sem4\Clg_Project\finquant-nexus\disst\dt_docs")
+_M_NS = 'http://schemas.openxmlformats.org/officeDocument/2006/math'
+
+def _make_omml_para(eq_text: str):
+    """Wrap equation text in a native Word m:oMathPara block (display equation)."""
+    ns = _M_NS
+    para = etree.Element(f'{{{ns}}}oMathPara')
+    math = etree.SubElement(para, f'{{{ns}}}oMath')
+    r = etree.SubElement(math, f'{{{ns}}}r')
+    rpr = etree.SubElement(r, f'{{{ns}}}rPr')
+    sty = etree.SubElement(rpr, f'{{{ns}}}sty')
+    sty.set(f'{{{ns}}}val', 'p')
+    t = etree.SubElement(r, f'{{{ns}}}t')
+    t.text = eq_text
+    return para
+
+BASE = Path(__file__).parent
+SRC  = BASE / "chap_content"
+DST  = BASE / "dt_docs"
 DST.mkdir(parents=True, exist_ok=True)
 
 FONT = "Times New Roman"
@@ -323,17 +339,8 @@ def md_to_docx(md_path: Path, docx_path: Path):
 
         # --- Math equation block (4-space or tab indent = display equation) ---
         if raw.startswith('    ') or raw.startswith('\t'):
-            eq = stripped
-            eq = _math_unicode(eq)
-            para = doc.add_paragraph()
-            set_para_spacing(para, before=6, after=6)
-            para.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            para.paragraph_format.left_indent  = Mm(10)
-            para.paragraph_format.right_indent = Mm(10)
-            run = para.add_run(eq)
-            run.font.name   = 'Cambria Math'
-            run.font.size   = Pt(12)
-            run.font.italic = False
+            eq = _math_unicode(stripped)
+            doc.element.body.append(_make_omml_para(eq))
             i += 1
             continue
 
