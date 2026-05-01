@@ -15,8 +15,8 @@ from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
 import copy
 
-SRC = Path(r"c:\AAA\Personal\Clg\finquant\fqn1\disst\chap_content")
-DST = Path(r"c:\AAA\Personal\Clg\finquant\fqn1\disst\dt_docs")
+SRC = Path(r"e:\Sem4\Clg_Project\finquant-nexus\disst\chap_content")
+DST = Path(r"e:\Sem4\Clg_Project\finquant-nexus\disst\dt_docs")
 DST.mkdir(parents=True, exist_ok=True)
 
 FONT = "Times New Roman"
@@ -143,6 +143,45 @@ def add_code_block(doc, lines):
         pass
 
 
+def _math_unicode(expr: str) -> str:
+    """Convert ASCII math notation to Unicode for display equations."""
+    # Greek letters
+    expr = re.sub(r'\bmu\b',      'μ',  expr)
+    expr = re.sub(r'\balpha\b',   'α',  expr)
+    expr = re.sub(r'\bbeta\b',    'β',  expr)
+    expr = re.sub(r'\bgamma\b',   'γ',  expr)
+    expr = re.sub(r'\bdelta\b',   'δ',  expr)
+    expr = re.sub(r'\bsigma\b',   'σ',  expr)
+    expr = re.sub(r'\btheta\b',   'θ',  expr)
+    expr = re.sub(r'\blambda\b',  'λ',  expr)
+    expr = re.sub(r'\bepsilon\b', 'ε',  expr)
+    expr = re.sub(r'\bphi\b',     'φ',  expr)
+    expr = re.sub(r'\bpi\b',      'π',  expr)
+    expr = re.sub(r'\bomega\b',   'ω',  expr)
+    # Superscripts
+    expr = expr.replace('^2',  '²')
+    expr = expr.replace('^3',  '³')
+    expr = expr.replace('^T',  'ᵀ')
+    expr = expr.replace('^-1', '⁻¹')
+    # Subscripts (common cases)
+    expr = re.sub(r'_\{([^}]+)\}', lambda m: ''.join(
+        '₀₁₂₃₄₅₆₇₈₉'[int(c)] if c.isdigit() else c for c in m.group(1)), expr)
+    expr = re.sub(r'_([0-9])', lambda m: '₀₁₂₃₄₅₆₇₈₉'[int(m.group(1))], expr)
+    # Operators
+    expr = expr.replace('||', '‖')
+    expr = expr.replace('!=', '≠')
+    expr = expr.replace('>=', '≥')
+    expr = expr.replace('<=', '≤')
+    expr = expr.replace('->',  '→')
+    expr = expr.replace('<-',  '←')
+    expr = re.sub(r'\bsqrt\b', '√', expr)
+    expr = re.sub(r'\bsum\b',  'Σ', expr)
+    expr = re.sub(r'\bprod\b', 'Π', expr)
+    expr = re.sub(r'\binf\b',  '∞', expr)
+    # N(0, ...) stays as is — common enough to be readable
+    return expr
+
+
 def md_to_docx(md_path: Path, docx_path: Path):
     doc = Document()
     set_doc_defaults(doc)
@@ -209,13 +248,8 @@ def md_to_docx(md_path: Path, docx_path: Path):
             i += 1
             continue
 
-        # --- Horizontal rule ---
+        # --- Horizontal rule --- skip entirely, don't render
         if re.match(r'^---+$', stripped) or re.match(r'^\*\*\*+$', stripped):
-            para = doc.add_paragraph()
-            set_para_spacing(para, before=4, after=4)
-            run = para.add_run('-' * 60)
-            run.font.size = Pt(10)
-            run.font.color.rgb = RGBColor(180, 180, 180)
             i += 1
             continue
 
@@ -224,12 +258,12 @@ def md_to_docx(md_path: Path, docx_path: Path):
         if m:
             level = len(m.group(1))
             text  = m.group(2)
-            # Strip markdown metadata lines (## Target: ... | Status:)
-            if level <= 2 and re.search(r'Target:|Status:|Word count:', text):
+            # Skip file meta title: # Chapter X — Title (top of each file)
+            if level == 1 and re.search(r'Chapter \d+', text):
                 i += 1
                 continue
-            # Strip file reference lines
-            if '> Reference:' in text or '> Writing rules:' in text:
+            # Skip ALL metadata lines including Reference: lines in headings
+            if re.search(r'Target:|Status:|Word count:|Reference:.*DISSERTATION|DISSERTATION_FORMATTING', text):
                 i += 1
                 continue
             add_heading(doc, text, min(level, 4))
@@ -239,6 +273,15 @@ def md_to_docx(md_path: Path, docx_path: Path):
         # --- Blockquote / note lines ---
         if stripped.startswith('>'):
             text = stripped.lstrip('> ').strip()
+            # Skip ALL metadata/formatting instruction lines
+            if any(kw in text for kw in [
+                'Reference:', 'Writing rules:', 'prompt.md', 'Last updated:',
+                'DISSERTATION_FORMATTING', 'Arabic page numbering', 'page numbering from',
+                'Annexure', 'update after all figures', 'update after all tables',
+                'update actual page numbers'
+            ]):
+                i += 1
+                continue
             if text:
                 para = doc.add_paragraph()
                 set_para_spacing(para, before=2, after=2)
@@ -273,10 +316,31 @@ def md_to_docx(md_path: Path, docx_path: Path):
             continue
 
         # --- Plain paragraph ---
+        # Skip footer metadata lines
+        if re.match(r'^\*Reference:.*\*$', stripped) or re.match(r'^\*Last updated:.*\*$', stripped):
+            i += 1
+            continue
+
+        # --- Math equation block (4-space or tab indent = display equation) ---
+        if raw.startswith('    ') or raw.startswith('\t'):
+            eq = stripped
+            eq = _math_unicode(eq)
+            para = doc.add_paragraph()
+            set_para_spacing(para, before=6, after=6)
+            para.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            para.paragraph_format.left_indent  = Mm(10)
+            para.paragraph_format.right_indent = Mm(10)
+            run = para.add_run(eq)
+            run.font.name   = 'Cambria Math'
+            run.font.size   = Pt(12)
+            run.font.italic = False
+            i += 1
+            continue
+
         # Strip HTML tags but keep the visible text (especially [INSERT ...] markers)
         clean = re.sub(r'<span[^>]*>', '', stripped)
         clean = re.sub(r'</span>', '', clean)
-        clean = clean.strip()
+        clean = _math_unicode(clean.strip())
         if clean:
             para = doc.add_paragraph()
             set_para_spacing(para, before=0, after=6)

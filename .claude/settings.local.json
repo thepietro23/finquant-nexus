@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c ' *)",
+      "Bash(python md_to_docx.py)",
+      "Bash(pip install *)",
+      "Bash(python -c \"from lxml import etree; print\\('lxml ready'\\)\")"
+    ]
+  }
+}

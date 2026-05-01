@@ -285,55 +285,59 @@ Appendix E  List of Abbreviations                            138
 ---
 
 ## DOCUMENT 7 — LIST OF FIGURES
-*(Annexure-VII — update after all figures are placed)*
 
-```
-LIST OF FIGURES
+# LIST OF FIGURES
 
-Figure 3.1   Overall System Architecture Diagram                           30
-Figure 3.4   Sentiment Analysis Pipeline: News Sources to RL Observation   40
-Figure 3.5   Stock Relationship Graph with All Three Edge Types             44
-Figure 3.6   Temporal Graph Attention Network Architecture                 46
-Figure 3.7   RL Environment State-Action-Reward Cycle                      50
-Figure 3.8   Federated Learning System: FedProx vs FedAvg Convergence      62
-Figure 4.1   Sample NIFTY 50 Stock Price Chart (2015–2025)                 69
-Figure 4.2   Portfolio Analytics Tab — Five Performance Metric Cards        72
-Figure 4.3   Growth Chart: Portfolio vs NIFTY 50 Index vs Fixed Deposit    73
-Figure 4.4   RL Agent Tab — Ensemble Algorithm Selected                     75
-Figure 4.5   RL Algorithm Comparison Table from Dashboard                   77
-Figure 4.6   Sentiment Analysis Tab — Live FinBERT Scores                   80
-Figure 4.7   Graph Visualization Tab — All Three Edge Types Enabled         83
-Figure 4.8   Stress Testing Tab — Monte Carlo Fan Chart                     86
-Figure 4.9   Federated Learning Tab — Convergence and Privacy Budget        89
-Figure 4.10  Pipeline Workflow Tab — 15-Stage Animated Data Flow            93
-Figure 4.11  Future Prediction Tab — Black Bootstrap Simulation Paths       94
-Figure 5.1   Benchmark Growth Chart: Portfolio vs NIFTY 50 vs FD           96
-Figure A.1   Complete FINQUANT-NEXUS System Architecture                   128
-```
+| Figure No. | Caption | Page |
+|-----------|---------|------|
+| Figure 3.1 | Overall System Architecture Diagram | * |
+| Figure 3.4 | Sentiment Analysis Pipeline: News Sources to RL Observation Space | * |
+| Figure 3.5 | Stock Relationship Graph with All Three Edge Types Enabled | * |
+| Figure 3.6 | Temporal Graph Attention Network Architecture | * |
+| Figure 3.7 | RL Environment State-Action-Reward Cycle | * |
+| Figure 3.8 | Federated Learning System: FedProx vs FedAvg Convergence | * |
+| Figure 4.1 | Sample NIFTY 50 Stock Price Chart (January 2015 to December 2025) | * |
+| Figure 4.2 | Portfolio Analytics Tab Showing Five Performance Metric Cards | * |
+| Figure 4.3 | Growth Chart: Portfolio vs NIFTY 50 Index vs Fixed Deposit | * |
+| Figure 4.4 | RL Agent Tab with Ensemble Algorithm Selected | * |
+| Figure 4.5 | RL Algorithm Comparison Table from Dashboard | * |
+| Figure 4.6 | Sentiment Analysis Tab Showing Live FinBERT Scores | * |
+| Figure 4.7 | Graph Visualization Tab with All Three Edge Types Enabled | * |
+| Figure 4.8 | Stress Testing Tab Showing Monte Carlo Simulation Fan Chart | * |
+| Figure 4.9 | Federated Learning Tab Showing Convergence and Privacy Budget | * |
+| Figure 4.10 | Pipeline Workflow Tab Showing 15-Stage Animated Data Flow | * |
+| Figure 4.11 | Future Prediction Tab Showing Black Bootstrap Simulation Paths | * |
+| Figure 5.1 | Benchmark Growth Chart: Portfolio vs NIFTY 50 vs Fixed Deposit | * |
+| Figure A.1 | Complete FINQUANT-NEXUS System Architecture Diagram | * |
+
+> Note: Page numbers marked * are to be updated after final Word assembly and pagination.
 
 ---
 
 ## DOCUMENT 8 — LIST OF TABLES
-*(Annexure-VII — update after all tables are placed)*
 
-```
-LIST OF TABLES
+# LIST OF TABLES
 
-Table 2.1   Comparison of Related Works                                    28
-Table 3.1   Dataset Statistics — NIFTY 50 Constituent Stocks               32
-Table 3.2   21 Technical Indicators — Name, Type, Window, Purpose          36
-Table 3.3   RL Algorithm Hyperparameters                                   55
-Table 3.4   Federated Learning Client Sector Groups                        61
-Table 4.1   Development Environment Specifications                         68
-Table 4.2   Dataset Summary Statistics                                     70
-Table 4.3   RL Algorithm Performance Comparison (Test Period 2024–2025)    77
-Table 4.4   Stock Graph Statistics                                         84
-Table 4.5   Stress Testing Risk Metrics — All Eight Scenarios              87
-Table 4.6   Federated Learning Results Summary                             90
-Table 4.7   Forward Simulation Results per Algorithm (1-Year Horizon)      94
-Table 4.8   Test Coverage Summary (12 Test Files)                          95
-Table 5.1   Portfolio vs Benchmark Comparison (April 2025 to March 2026)   96
-Table 5.2   RL Algorithm Behavioral Analysis by Market Condition          101
+| Table No. | Title | Page |
+|----------|-------|------|
+| Table 2.1 | Comparison of Related Works in RL Portfolio Optimisation | * |
+| Table 3.1 | Dataset Statistics: NIFTY 50 Constituent Stocks | * |
+| Table 3.2 | 21 Technical Indicators: Name, Type, Window, and Purpose | * |
+| Table 3.3 | RL Algorithm Hyperparameters | * |
+| Table 3.4 | Federated Learning Client Sector Groups | * |
+| Table 4.1 | Development Environment Specifications | * |
+| Table 4.2 | Dataset Summary Statistics | * |
+| Table 4.3 | RL Algorithm Performance Comparison (Test Period 2024 to 2025) | * |
+| Table 4.4 | Stock Graph Statistics | * |
+| Table 4.5 | Stress Testing Risk Metrics: All Eight Scenarios | * |
+| Table 4.6 | Federated Learning Results Summary | * |
+| Table 4.7 | Forward Simulation Results per Algorithm (1-Year Horizon) | * |
+| Table 4.8 | Test Coverage Summary (12 Test Files) | * |
+| Table 5.1 | Portfolio vs Benchmark Comparison (April 2025 to March 2026) | * |
+| Table 5.2 | RL Algorithm Behavioral Analysis by Market Condition | * |
+| Table 5.3 | Federated Learning Privacy-Utility Summary | * |
+
+> Note: Page numbers marked * are to be updated after final Word assembly and pagination.
 Table 5.3   Federated Learning Privacy-Utility Summary                    114
 ```
 

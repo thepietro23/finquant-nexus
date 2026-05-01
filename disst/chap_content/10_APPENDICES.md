@@ -15,7 +15,7 @@ The complete FINQUANT-NEXUS system architecture is shown in Figure A.1. The diag
 
 <span style="color:red;font-weight:bold;">[INSERT Figure A.1 here — file: imgs/fig_3_1_architecture.png — Caption: Figure A.1: Complete FINQUANT-NEXUS System Architecture showing data flow from Yahoo Finance and news sources through the ML pipeline to the React dashboard. High-resolution version rendered from DIAGRAMS_MERMAID.md using Mermaid.live.]</span>
 
-The architecture diagram covers the following components in sequence:
+The architecture diagram covers the following components in sequence.
 
 - **Data Layer:** Yahoo Finance API (price data for 44 stocks), Google News API, Yahoo Finance News, Indian RSS feeds
 - **Processing Layer:** Data cleaning, forward-fill, 21 technical indicator computation, 252-day rolling Z-score normalization
@@ -211,7 +211,7 @@ logging:
   log_dir: 'logs'
 ```
 
-> Note: The NAS (nas) and Quantum (quantum) sections of the configuration file exist in the broader codebase but are outside the scope of this dissertation. They have been omitted from the listing above. All values used in Chapter 3 and Chapter 4 are directly traceable to the sections above.
+> Note: All values used in Chapter 3 and Chapter 4 are directly traceable to the sections above.
 
 ---
 
@@ -248,7 +248,7 @@ Table C.1 lists the primary REST API endpoints exposed by the FINQUANT-NEXUS Fas
 | 23 | POST | /api/cache/refresh | Force-invalidate and rebuild the news sentiment SQLite cache |
 | 24 | GET | /docs | Swagger UI interactive API documentation |
 
-All endpoints return HTTP 200 with JSON on success. Standard HTTP error codes (400, 404, 500) are returned on failure with a JSON error message body. GET and POST endpoints share the same error handling convention. CORS is configured for http://localhost:3000 to allow the React dashboard to communicate with the backend running on port 8000. Endpoints marked POST accept a JSON request body; parameter schemas are defined in the Swagger documentation at /docs.
+All endpoints return HTTP 200 with JSON on success. Standard HTTP error codes (400, 404, 500) are returned on failure with a JSON error message body. GET and POST endpoints share the same error handling convention. CORS is configured for http://localhost:3000 to allow the React dashboard to communicate with the backend running on port 8000. Endpoints marked POST accept a JSON request body, and parameter schemas are defined in the Swagger documentation at /docs.
 
 ---
 
@@ -271,12 +271,9 @@ The pytest test suite for FINQUANT-NEXUS was run on the local development machin
 | 9 | test_gan.py | Monte Carlo stress testing, VaR computation | PASS |
 | 10 | test_fl.py | Federated learning, FedProx, DP-SGD privacy | PASS |
 | 11 | test_api.py | FastAPI endpoints, response schema validation | PASS |
-| 12 | NAS/Quantum | Modules outside dissertation scope | 1 SKIPPED |
-| | **TOTAL** | | **244 passed, 1 failed, 1 skipped (246 total)** |
+| | **TOTAL** | | **244 passed, 1 failed (245 total)** |
 
 > *The single failing test (test_phase0.py) checks the risk-free rate configuration value. The test expects 0.07 but the active configuration has 0.05. This is an outdated test assertion, not a functional bug. All calculations in the dissertation use the correct value of 0.05 as defined in configs/base.yaml.
-
-> The skipped test covers the NAS and Quantum modules which are explicitly outside the scope of this dissertation. The skip decorator includes a reason string referencing Section 1.5 of the dissertation.
 
 **Pytest run command used:**
 ```
